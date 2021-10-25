@@ -63,6 +63,7 @@ class ModelSchema(ObjTypeSchema):
         extend_colander.LocalDateTime(),
         validator=validators.convertible_to_seconds
     )
+    lake = SchemaNode(String())
     duration = SchemaNode(
         extend_colander.TimeDelta()
     )
@@ -154,6 +155,7 @@ class Model(GnomeId):
                  name='Model',
                  time_step=timedelta(minutes=15),
                  start_time=round_time(datetime.now(), 3600),
+                 lake = 'Lake St. Clair',
                  duration=timedelta(days=1),
                  weathering_substeps=1,
                  map=None,
@@ -225,6 +227,7 @@ class Model(GnomeId):
 
         # default to now, rounded to the nearest hour
         self.start_time = start_time
+        self.lake = lake
         self._duration = duration
         self.weathering_substeps = weathering_substeps
 
@@ -480,6 +483,14 @@ class Model(GnomeId):
     def start_time(self, start_time):
         self._start_time = asdatetime(start_time)
         self.rewind()
+
+    @property
+    def lake(self):
+        return self._lake
+
+    @lake.setter
+    def lake(self, lake):
+        self._lake = lake
 
     @property
     def time_step(self):
