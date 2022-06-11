@@ -59,5 +59,6 @@ notebook # this gets you Jupyter notebook without all the QT stuff
 sphinx
 sphinx_rtd_theme
 nbsphinx
+backports-functools_lru_cache
 
 
