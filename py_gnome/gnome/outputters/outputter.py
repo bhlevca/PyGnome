@@ -40,6 +40,9 @@ class BaseOutputterSchema(ObjTypeSchema):
     output_last_step = SchemaNode(
         Boolean(), save=True, update=True
     )
+    output_single_step = SchemaNode(
+        Boolean(), save=True, update=True
+    )
     output_timestep = SchemaNode(
         TimeDelta(), missing=drop, save=True, update=True
     )
@@ -69,6 +72,7 @@ class Outputter(GnomeId):
                  output_timestep=None,
                  output_zero_step=True,
                  output_last_step=True,
+                 output_single_step=False,
                  output_start_time=None,
                  output_dir=None,  # Fixme: this probably shouldn't be in the base class
                  surface_conc=None,
@@ -83,6 +87,7 @@ class Outputter(GnomeId):
         :param output_timestep: default is None in which case every time the
             write_output is called, output is written. If set, then output is
             written every output_timestep starting from model_start_time.
+            If set to zero only a single time is output, the output_start_time.
         :type output_timestep: timedelta object
 
         :param output_zero_step: default is True. If True then output for
@@ -93,6 +98,10 @@ class Outputter(GnomeId):
         :param output_last_step: default is True. If True then output for
             final step is written regardless of output_timestep. This is
             potentially an extra output, not aligne withe the output_timestep.
+        :type output_last_step: boolean
+
+        :param output_single_step: default is False. If True then output is written
+            for only one step, the output_start_time, regardless of output_timestep.
         :type output_last_step: boolean
 
         :param output_start_time: default is None in which case it is set to
@@ -113,7 +122,7 @@ class Outputter(GnomeId):
 
         # flag to keep track of _state of the object - is True after calling
         # prepare_for_model_run
-        ## fixme -- why should this be initilaizable???
+        ## fixme -- why should this be initializable???
         # self._middle_of_run = kwargs.pop('_middle_of_run', False)
         self._middle_of_run = False
 
@@ -123,8 +132,10 @@ class Outputter(GnomeId):
         self.on = on
         self.output_zero_step = output_zero_step
         self.output_last_step = output_last_step
+        self.output_single_step = output_single_step
 
         if output_timestep:
+        #if output_timestep is not None: # allow for output_timestep = 0
             self._output_timestep = int(output_timestep.total_seconds())
         else:
             self._output_timestep = None
@@ -271,6 +282,10 @@ class Outputter(GnomeId):
                         self._write_step = True
                         self._is_first_output = False
                         return
+
+        if self.output_single_step:
+            self._write_step = False
+            return
 
         if self._output_timestep is not None:
             self._write_step = False
@@ -471,7 +486,7 @@ class OutputterFilenameMixin(object):
 
     def __init__(self, filename, *args, **kwargs):
 
-        super(OutputterFilenameMixin, self).__init__()
+        super(OutputterFilenameMixin, self).__init__(**kwargs)
         self.filename = filename
 
     @property

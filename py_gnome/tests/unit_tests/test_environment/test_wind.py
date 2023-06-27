@@ -1,9 +1,5 @@
 #!/usr/bin/env python
 
-
-
-
-
 import os
 from datetime import datetime, timedelta
 import shutil
@@ -13,7 +9,7 @@ from pytest import raises
 
 import numpy as np
 
-import unit_conversion
+import nucos
 
 from gnome.basic_types import datetime_value_2d
 from gnome.utilities.time_utils import (zero_time,
@@ -53,7 +49,7 @@ def test_exceptions():
         wind.set_wind_data(dtv)
 
     # invalid units
-    with raises(unit_conversion.InvalidUnitError):
+    with raises(nucos.InvalidUnitError):
         Wind(timeseries=dtv, units='met per second')
 
 
@@ -129,10 +125,10 @@ def test_wind_circ_fixture(wind_circ):
 
     gtime_val = (wm.get_wind_data(coord_sys='uv', units='meter per second')
                  .view(dtype=np.recarray))
-    expected = unit_conversion.convert('Velocity',
-                                       wm.units,
-                                       'meter per second',
-                                       wind_circ['uv'].value)
+    expected = nucos.convert('Velocity',
+                              wm.units,
+                              'meter per second',
+                              wind_circ['uv'].value)
 
     assert np.all(gtime_val.time == wind_circ['uv'].time)
     assert np.allclose(gtime_val.value, expected, rtol=rtol, atol=atol)
@@ -151,7 +147,9 @@ def test_get_value(wind_circ):
 @pytest.mark.parametrize("coord_sys",
                          ['r-theta', 'uv', 'r', 'theta', 'u', 'v'])
 def test_at(coord_sys, wind_circ):
-    'test at(...) function'
+    """
+    test at(...) function for a full set of coord_systems
+    """
     wind = wind_circ['wind']
     tp1 = np.array([[0, 0], ])
     # tp2 = np.array([[0, 0], [1, 1]])
@@ -163,7 +161,6 @@ def test_at(coord_sys, wind_circ):
         d_val0 = rec['value'][0]
         d_val1 = rec['value'][1]
         val1 = wind.at(tp1, time, coord_sys=coord_sys)
-        print(val1)
 
         if coord_sys in ('r-theta', 'uv'):
             assert np.isclose(val1[0][0], d_val0)
@@ -173,6 +170,25 @@ def test_at(coord_sys, wind_circ):
         else:
             assert np.isclose(val1[0], d_val0)
 
+def test_at_default(wind_circ):
+    """
+    Make sure at() provides the correct default ('uv') test at(...) function
+    """
+    wind = wind_circ['wind']
+    pt = np.array([[0, 0], ])  # need a point, even though it doesn't change
+    series = wind_circ['uv']
+
+    for rec in series:
+        time = rec['time']
+        u = rec['value'][0]
+        v = rec['value'][1]
+        val = wind.at(pt, time)
+
+        print(f"{u=}")
+        print(f"{v=}")
+        print(f"{val=}")
+        assert np.isclose(val[0][0], u)
+        assert np.isclose(val[0][1], v)
 
 @pytest.fixture(scope='module')
 def wind_rand(rq_rand):
@@ -625,7 +641,7 @@ def test_wind_from_values_knots():
     # see if it's got the correct data
     for dt, r, theta in values:
         vals = wind.get_value(dt)
-        assert np.allclose(vals[0], unit_conversion.convert('velocity',
+        assert np.allclose(vals[0], nucos.convert('velocity',
                                                             'knot', 'm/s', r))
         assert np.allclose(vals[1], theta)
 

@@ -8,14 +8,12 @@ import os
 # import copy
 import io
 # import zipfile
-import gridded
 
 import numpy as np
 
-from colander import (SchemaNode, drop, OneOf,
-                      Float, String, Range, Boolean)
+import nucos as uc
 
-import unit_conversion as uc
+import gridded
 
 from gnome.basic_types import datetime_value_2d
 from gnome.basic_types import ts_format
@@ -23,22 +21,19 @@ from gnome.basic_types import wind_datasources
 
 from gnome.cy_gnome.cy_ossm_time import ossm_wind_units
 
-from gnome.utilities.time_utils import sec_to_datetime
-from gnome.utilities.time_utils import (zero_time,
-                                        sec_to_date)
+from gnome.utilities.time_utils import (sec_to_datetime, zero_time, sec_to_date)
 from gnome.utilities.timeseries import Timeseries
 from gnome.utilities.inf_datetime import InfDateTime
 from gnome.utilities.distributions import RayleighDistribution as rayleigh
 
-from gnome.persist.extend_colander import (DefaultTupleSchema,
-                                           LocalDateTime,
-                                           DatetimeValue2dArraySchema,
-                                           FilenameSchema)
+from gnome.persist import (SchemaNode, drop, OneOf, Float, String, Range,
+                           Boolean, DefaultTupleSchema, LocalDateTime,
+                           DatetimeValue2dArraySchema, FilenameSchema,
+                           validators, base_schema)
 from gnome.utilities.convert import (to_time_value_pair,
                                      tsformat,
                                      to_datetime_value_2d)
 from gnome.persist.validators import convertible_to_seconds
-from gnome.persist import validators, base_schema
 
 from .environment import Environment
 from gnome.environment.gridded_objects_base import Time, TimeSchema
@@ -129,14 +124,14 @@ class WindSchema(base_schema.ObjTypeSchema):
 
 
 class Wind(Timeseries, Environment):
+    ## fixme: rename as "PointWind"
     '''
-    Defines the Wind conditions for a single point
+    Provides the a "point wind" -- uniform wind over all space
     '''
     # object is referenced by others using this attribute name
     _ref_as = 'wind'
     _gnome_unit = 'm/s'
 
-    # default units for input/output data
     _schema = WindSchema
 
     # list of valid velocity units for timeseries
@@ -153,9 +148,20 @@ class Wind(Timeseries, Environment):
                  extrapolation_is_allowed=False,
                  **kwargs):
         """
-        todo: update docstrings!
+        Create a PointWind object, representing a time series of wind at a single value
+
+        :param timeseries=None:
+        :param units=None:
+        :param filename=None:
+        :param coord_sys='r-theta':
+        :param latitude=None:
+        :param longitude=None:
+        :param speed_uncertainty_scale=0.0:
+        :param extrapolation_is_allowed=False:
+
+
         """
-        self._timeseries = np.array([(sec_to_date(zero_time()),[0.0, 0.0])], dtype=datetime_value_2d)
+        self._timeseries = np.array([(sec_to_date(zero_time()), [0.0, 0.0])], dtype=datetime_value_2d)
         self.updated_at = kwargs.pop('updated_at', None)
         self.source_id = kwargs.pop('source_id', 'undefined')
 
@@ -424,7 +430,7 @@ class Wind(Timeseries, Environment):
 
         :param units: [optional] outputs data in these units. Default is to
             output data without unit conversion
-        :type units: string. Uses the unit_conversion module.
+        :type units: string. Uses the nucos module.
 
         :param coord_sys: output coordinate system for the times series:
                           either 'r-theta' or 'uv'
@@ -502,7 +508,7 @@ class Wind(Timeseries, Environment):
 
         return tuple(data[0]['value'])
 
-    def at(self, points, time, coord_sys='r-theta', units=None,
+    def at(self, points, time, coord_sys='uv', units=None,
            _auto_align=True):
         '''
         Returns the value of the wind at the specified points at the specified
@@ -624,6 +630,13 @@ class Wind(Timeseries, Environment):
 
         return (msgs, True)
 
+class PointWind(Wind):
+    """
+    Wind at a single point
+    """
+    # currently an alias for Wind -- but we should probably swap those and
+    # make this the real class, and the `Wind` be the alias.
+    pass
 
 def constant_wind(speed, direction, units='m/s'):
     """
@@ -647,7 +660,7 @@ def constant_wind(speed, direction, units='m/s'):
                                                           minute=0)
     wind_vel['value'][0] = (speed, direction)
 
-    return Wind(timeseries=wind_vel, coord_sys='r-theta', units=units)
+    return PointWind(timeseries=wind_vel, coord_sys='r-theta', units=units)
 
 
 def wind_from_values(values, units='m/s'):

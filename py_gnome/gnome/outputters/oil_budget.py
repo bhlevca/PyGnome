@@ -1,19 +1,29 @@
 """
-Outputter for dumping teh oil budget as a CSV file
+Outputter for dumping the oil budget as a CSV file
 
 (Or maybe other formats in the future)
 
 """
 
-
-
-
-
 import csv
 
 from .weathering import BaseMassBalanceOutputter
 from .outputter import OutputterFilenameMixin
+from . import BaseOutputterSchema
+from gnome.persist import Boolean, SchemaNode
 
+class OilBudgetOutputSchema(BaseOutputterSchema):
+    # these fields are saved in the base class so need to override
+    #pass
+    output_zero_step = SchemaNode(
+        Boolean(), save=False, update=False
+    )
+    output_last_step = SchemaNode(
+        Boolean(), save=False, update=False
+    )
+    output_single_step = SchemaNode(
+        Boolean(), save=False, update=False
+    )
 
 class OilBudgetOutput(BaseMassBalanceOutputter, OutputterFilenameMixin):
     """
@@ -43,6 +53,7 @@ class OilBudgetOutput(BaseMassBalanceOutputter, OutputterFilenameMixin):
                          ]
 
 
+    _schema = OilBudgetOutputSchema
 
     def __init__(self,
                  filename="gnome_oil_budget.csv",
@@ -67,6 +78,7 @@ class OilBudgetOutput(BaseMassBalanceOutputter, OutputterFilenameMixin):
                                               # outputter
                                               output_zero_step=True,
                                               output_last_step=True,
+                                              output_single_step=False,
                                               output_start_time=None,
                                               surface_conc=None,
                                               *args,

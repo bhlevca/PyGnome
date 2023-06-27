@@ -3,10 +3,6 @@
 Tests for netcdf_outputter
 '''
 
-
-
-
-
 import os
 from datetime import datetime, timedelta
 from math import ceil
@@ -18,11 +14,11 @@ import numpy as np
 
 import netCDF4 as nc
 
-from gnome.spill import point_line_release_spill, Spill, Release
+from gnome.spills import surface_point_line_spill, Spill, Release
 from gnome.spill_container import SpillContainerPair
 from gnome.weatherers import Evaporation
 from gnome.environment import Water
-from gnome.movers import RandomMover, constant_wind_mover
+from gnome.movers import RandomMover, constant_point_wind_mover
 from gnome.outputters import NetCDFOutput
 from gnome.model import Model
 from ..conftest import test_oil
@@ -42,7 +38,7 @@ def model(sample_model_fcn, output_filename):
 
     model.cache_enabled = True
     model.spills += \
-        point_line_release_spill(num_elements=5,
+        surface_point_line_spill(num_elements=5,
                                  start_position=sample_model_fcn['release_start_pos'],
                                  release_time=model.start_time,
                                  end_release_time=model.start_time + model.duration,
@@ -52,7 +48,7 @@ def model(sample_model_fcn, output_filename):
 
     water = Water()
     model.movers += RandomMover(diffusion_coef=100000)
-    model.movers += constant_wind_mover(1.0, 0.0)
+    model.movers += constant_point_wind_mover(1.0, 0.0)
     model.weatherers += Evaporation(water=water, wind=model.movers[-1].wind)
 
     model.outputters += NetCDFOutput(output_filename)
@@ -384,6 +380,37 @@ def test_read_data_exception(model):
         NetCDFOutput.read_data(o_put.filename)
 
 
+#@pytest.mark.slow
+def test_single_time(model):
+    """
+    tests the option to output only a single time step with output_single_step = True
+
+    sets output_zero_step and output_last_step to False.
+
+    read_data will give an error if there is more than one time in the file
+    when neither a time nor an index is specified
+    """
+    model.rewind()
+
+    o_put = [model.outputters[outputter.id] for outputter in
+             model.outputters if isinstance(outputter, NetCDFOutput)][0]
+    #o_put.output_timestep = timedelta(seconds=0) # previous method set time step to zero
+    o_put.output_timestep = timedelta(seconds=900)
+    o_put.output_single_step = True
+    curr_time = model.start_time + timedelta(seconds=900)
+    o_put.output_start_time = curr_time
+    o_put.output_zero_step = False
+    o_put.output_last_step = False
+    _run_model(model)
+
+    file_ = o_put.filename
+
+    (nc_data, weathering_data) = NetCDFOutput.read_data(file_, curr_time)
+    assert curr_time == nc_data['current_time_stamp'].item()
+    (nc_data, weathering_data) = NetCDFOutput.read_data(file_)
+    assert curr_time == nc_data['current_time_stamp'].item()
+
+
 @pytest.mark.slow
 @pytest.mark.parametrize(("output_ts_factor", "use_time"),
                          [(1, True), (1, False),
@@ -624,7 +651,7 @@ def test_serialize_deserialize(output_filename):
     '''
     s_time = datetime(2014, 1, 1, 1, 1, 1)
     model = Model(start_time=s_time)
-    model.spills += point_line_release_spill(num_elements=5,
+    model.spills += surface_point_line_spill(num_elements=5,
                                              start_position=(0, 0, 0),
                                              release_time=model.start_time)
 

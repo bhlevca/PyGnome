@@ -99,17 +99,21 @@ class Weatherer(Process):
     def _exp_decay(self, M_0, lambda_, time):
         '''
         Exponential decay: x(t) = exp(lambda_*time)
-        The lambda_ should be 'negative' in order for function to decay
+        The `lambda_` should be 'negative' in order for function to decay
         '''
         mass_remain = M_0 * np.exp(lambda_ * time)
         return mass_remain
 
-    def get_wind_speed(self, points, model_time,
+    def get_wind_speed(self, points, model_time, min_val = 0,
                        coord_sys='r', fill_value=1.0):
         '''
             Wrapper for the weatherers so they can get wind speeds
         '''
-        retval = self.wind.at(points, model_time, coord_sys=coord_sys)
+        if hasattr(self.wind,'ice_concentration'):
+            retval = self.wind.at(points, model_time, min_val, coord_sys=coord_sys).reshape(-1)
+        else:
+            retval = self.wind.at(points, model_time, coord_sys=coord_sys).reshape(-1)
+            retval[retval < min_val] = min_val
 
         if isinstance(retval, np.ma.MaskedArray):
             return retval.filled(fill_value)
