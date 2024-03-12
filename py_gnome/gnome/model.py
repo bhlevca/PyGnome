@@ -46,7 +46,6 @@ from colander import (SchemaNode,
                       String, Float, Int, Bool, List,
                       drop, OneOf)
 
-from gnome.concentration.concentration import ConcentrationSchema
 from gnome.utilities.time_utils import round_time, asdatetime
 import gnome.utilities.rand
 from gnome.utilities.cache import ElementCache
@@ -104,9 +103,6 @@ class ModelSchema(ObjTypeSchema):
 
     #name of lake
     lake = SchemaNode(String())
-
-    #concentration locations
-    concentration = ConcentrationSchema()
 
     duration = SchemaNode(
         extend_colander.TimeDelta()
@@ -200,7 +196,6 @@ class Model(GnomeId):
                  time_step=timedelta(minutes=15),
                  start_time=round_time(datetime.now(), 3600),
                  lake = 'Lake St. Clair',
-                 concentration = None,
                  duration=timedelta(days=1),
                  weathering_substeps=1,
                  map=None,
@@ -272,8 +267,9 @@ class Model(GnomeId):
 
         # default to now, rounded to the nearest hour
         self.start_time = start_time
+
         self.lake = lake
-        self.concentration = concentration
+
         self._duration = duration
         self.weathering_substeps = weathering_substeps
 
@@ -732,7 +728,6 @@ class Model(GnomeId):
         # Since Model is top-level, it should gather what it can
         self.gather_ref_as(self.environment, ref_dict)
         self.gather_ref_as(self.map, ref_dict)
-        self.gather_ref_as(self.concentration, ref_dict)
         self.gather_ref_as(self.movers, ref_dict)
         self.gather_ref_as(self.weatherers, ref_dict)
         self.gather_ref_as(self.outputters, ref_dict)

@@ -309,6 +309,7 @@ _default_values = {'positions': ((3,), world_point_type, 'positions',
                    'partition_coeff': ((), np.float64, 'partition_coeff', 0),
                    'droplet_avg_size': ((), np.float64, 'droplet_avg_size', 0),
                    'surface_concentration': ((), np.float64, 'surface_concentration', 0),
+                   'volumetric_concentration': ((), np.float64, 'volumetric_concentration', 0),
                    }
 
 def get_array_type(name):
@@ -378,6 +379,7 @@ DEFAULT_ARRAY_TYPES = ['positions',
                        'density',
                        'viscosity',
                        'surface_concentration',
+                       'volumetric_concentration',
                        'spill_num',
                        'id',
                        'vol_frac_le_st',

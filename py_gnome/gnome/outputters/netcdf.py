@@ -83,6 +83,9 @@ var_attributes = {
     'surface_concentration': {'long_name': 'surface concentration of oil',
                               'units': 'g m-2',
                               },
+    'volumetric_concentration': {'long_name': 'volumetric_concentration of oil',
+                              'units': 'g m-3',
+                              },
     'windages': {},
     'windage_range': {},
     'windage_persist': {},
@@ -241,6 +244,7 @@ class NetCDFOutput(Outputter, OutputterFilenameMixin):
                        'viscosity',
                        'frac_water',
                        'surface_concentration',
+                       'volumetric_concentration',
                        ]
 
     # these are being handled specially -- i.e. pulled from the positions array

@@ -47,7 +47,7 @@ def surface_conc_kde(sc):
     :param sc: spill container that you want the concentrations computed on
     """
     spill_num = sc['spill_num']
-    sc['surface_concentration'] = np.zeros(spill_num.shape[0],)
+    sc['surface_concentration'] = np.zeros(spill_num.shape[0],)    
     for s in np.unique(spill_num):
         sid = np.where(spill_num==s)
         positions = sc['positions'][sid]
@@ -88,4 +88,4 @@ def surface_conc_kde(sc):
                     warnings.warn("LinAlg error occurred in surface concentration calculations.")
             t = t + bin_length
 
-        sc['surface_concentration'][sid] = c
+        sc['surface_concentration'][sid] = c        

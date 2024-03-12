@@ -61,4 +61,7 @@ sphinx_rtd_theme
 nbsphinx
 backports-functools_lru_cache
 
+#to read dfsu file
+mikeio
+
 

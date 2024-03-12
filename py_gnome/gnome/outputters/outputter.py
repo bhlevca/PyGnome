@@ -26,6 +26,9 @@ from gnome.persist import (
 from gnome.array_types import gat
 
 from gnome.utilities.surface_concentration import compute_surface_concentration
+from gnome.utilities.volumetric_concentration import compute_volumetric_concentration
+from gnome.concentration.dfsu_water_depth import DfsuWaterDepth
+from gnome.concentration.concentration_location import ConcentrationLocation, ConcentrationLocationSchema
 from gnome.gnomeobject import GnomeId
 
 
@@ -54,6 +57,10 @@ class BaseOutputterSchema(ObjTypeSchema):
     surface_conc = SchemaNode(
         String(allow_empty=True), save=True, update=True
     )
+    water_depth_dfsu_file = SchemaNode(
+        String(allow_empty=True), save=True, update=True
+    )
+    volumetric_conc_poi = ConcentrationLocationSchema
 
 
 class Outputter(GnomeId):
@@ -76,6 +83,8 @@ class Outputter(GnomeId):
                  output_start_time=None,
                  output_dir=None,  # Fixme: this probably shouldn't be in the base class
                  surface_conc=None,
+                 water_depth_dfsu_file=None,
+                 volumetric_conc_poi=None,
                  *args,
                  **kwargs):
         """
@@ -157,7 +166,11 @@ class Outputter(GnomeId):
         self.output_dir = output_dir
 
         self.surface_conc = surface_conc
+        self.water_depth_dfsu_file = water_depth_dfsu_file
+        self.volumetric_conc_poi = volumetric_conc_poi
+        
         self.array_types = dict()
+        
 
         # reset internally used variables
         self.rewind()
@@ -356,7 +369,26 @@ class Outputter(GnomeId):
                 pass
             else:
                 compute_surface_concentration(sc, self.surface_conc)
+                compute_volumetric_concentration(sc,self.DfsuWaterDepth, self.VolumetricConcentrationPOI)
                 self._surf_conc_computed = True
+
+    @property
+    def DfsuWaterDepth(self):
+        if not hasattr(self, '_dfsu_water_depth'):
+            self._dfsu_water_depth = None
+        if self._dfsu_water_depth is None:
+            self._dfsu_water_depth = DfsuWaterDepth(dfsufilename = self.water_depth_dfsu_file)
+
+        return self._dfsu_water_depth
+    
+    @property
+    def VolumetricConcentrationPOI(self):
+        if not hasattr(self, '_volumetric_concentration_poi'):
+            self._volumetric_concentration_poi = None
+        if self._volumetric_concentration_poi is None and self.volumetric_conc_poi is not None:
+            self._volumetric_concentration_poi = ConcentrationLocation(long=self.volumetric_conc_poi[0], lat=self.volumetric_conc_poi[1])
+
+        return self._volumetric_concentration_poi  
 
     def clean_output_files(self):
         '''
@@ -388,6 +420,7 @@ class Outputter(GnomeId):
 
         if self.surface_conc:
             self.array_types['surface_concentration'] = gat('surface_concentration')
+            self.array_types['volumetric_concentration'] = gat('volumetric_concentration')
 
     def write_output_post_run(self,
                               model_start_time,

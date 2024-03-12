@@ -28,6 +28,17 @@ class BaseMassBalanceOutputter(Outputter):
         output_info = {'model_time': sc.current_time_stamp}
         output_info.update(sc.mass_balance)
 
+        #add the volumetric concentration at point of interest
+        #this will be transfer back to front end for display in the fate view
+        con = 0.0
+        if 'volumetric_concentration_poi' in sc:
+            con = sc['volumetric_concentration_poi']
+        
+        if con > 0:
+            print(con)
+        output_info.update({'volumetric_concentration_poi': con})
+
+
         self.logger.debug(self._pid + 'step_num: {0}'.format(step_num))
 
         for name, val in output_info.items():

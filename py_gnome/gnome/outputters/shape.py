@@ -132,10 +132,11 @@ class ShapeOutput(Outputter):
 
             w.field('Time', 'C')
             w.field('LE id', 'N')
-            w.field('Depth', 'N')
+            w.field('Depth', 'F', decimal=5)
             w.field('Mass', 'N')
             w.field('Age', 'N')
             w.field('Surf_Conc', 'F', decimal=5)
+            w.field('Vol_Conc', 'F', decimal=5)
             w.field('Status_Code', 'N')
 
     def write_output(self, step_num, islast_step=False):
@@ -191,6 +192,7 @@ class ShapeOutput(Outputter):
                               sc['mass'][k],
                               sc['age'][k],
                               0.0,
+                              0,0,
                               sc['status_codes'][k])
             else:
                 writer.record(curr_time.strftime('%Y-%m-%dT%H:%M:%S'),
@@ -199,6 +201,7 @@ class ShapeOutput(Outputter):
                               sc['mass'][k],
                               sc['age'][k],
                               sc['surface_concentration'][k],
+                              sc['volumetric_concentration'][k],
                               sc['status_codes'][k])
 
     def _get_shape_writer(self, spill_container):
