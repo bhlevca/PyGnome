@@ -33,9 +33,7 @@ class BaseMassBalanceOutputter(Outputter):
         con = 0.0
         if 'volumetric_concentration_poi' in sc:
             con = sc['volumetric_concentration_poi']
-        
-        if con > 0:
-            print(con)
+
         output_info.update({'volumetric_concentration_poi': con})
 
 
