@@ -31,7 +31,7 @@ le_dtype = np.dtype(np.dtype([('Lat', np.float32),
 
 le_dtype = le_dtype.newbyteorder('B') # or ">"
 
-header_dtype = np.dtype(np.dtype([('name', np.string_, 10),
+header_dtype = np.dtype(np.dtype([('name', np.bytes_, 10),
                               ('day', np.int16),
                               ('month', np.int16),
                               ('year', np.int16),
