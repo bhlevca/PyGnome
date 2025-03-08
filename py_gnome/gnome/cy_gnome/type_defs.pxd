@@ -19,7 +19,8 @@ cdef extern from "TypeDefs.h":
     ctypedef unsigned char Boolean
     ctypedef short OSErr
     ctypedef unsigned long LETYPE
-    ctypedef long Seconds 
+    ctypedef long long Seconds 
+    #ctypedef long Seconds 
 
 cdef extern from "GEOMETRY.H":
     ctypedef struct WorldPoint:
@@ -94,8 +95,7 @@ cdef extern from "TypeDefs.h":
         float randSin
 
     ctypedef struct TimeValuePair:
-        #Seconds time
-        long long time
+        Seconds time
         VelocityRec value
 
     ctypedef TimeValuePair **TimeValuePairH
