@@ -45,7 +45,7 @@ def compute_volumetric_concentration(sc, water_depth:DfsuWaterDepth, location:Co
 
             idw_tree = Tree2(coordinates, sc['volumetric_concentration'], distance_threshold = threshold)  # scatter data points
             sc['volumetric_concentration_poi'] = idw_tree(location.xy)[0]
-            #print(f"Volumetric Concentration: {sc['volumetric_concentration_poi']}")
+            print(f"Volumetric Concentration: {sc['volumetric_concentration_poi']}")
 
 
 class Tree2(object):

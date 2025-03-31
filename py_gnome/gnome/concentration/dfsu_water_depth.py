@@ -56,11 +56,20 @@ class DfsuWaterDepth(GnomeId):
                 coordinates = np.array(coordinates).transpose()
 
                 first_time, second_time = self._locate_time(time)
-                first_value = np.array([self._ds.sel(x=p[0], y=p[1])[0][first_time].values for p in coordinates])
-                second_value = np.array([self._ds.sel(x=p[0], y=p[1])[0][second_time].values for p in coordinates])
+                first_value = np.zeros(len(coordinates))
+                second_value = np.zeros(len(coordinates))
+            
+                for i in range(len(coordinates)):
+                    p = coordinates[i]
+                    try:
+                        first_value[i] = self._ds.sel(x=p[0], y=p[1])[0][first_time].values
+                        second_value[i] = self._ds.sel(x=p[0], y=p[1])[0][second_time].values
+                    except:
+                        first_value[i] = second_value[i] = 0.5                                                
+
                 interpolated_value = first_value + (second_value - first_value) * (time - first_time) / self._time_interval
                 return interpolated_value, coordinates
-            except:
+            except Exception as exc:
                 return None, None
         else:
             return None, None
