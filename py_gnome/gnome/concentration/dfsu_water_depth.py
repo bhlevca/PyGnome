@@ -37,7 +37,7 @@ class DfsuWaterDepth(GnomeId):
         return self._crs_transformer.transform(location.long, location.lat)
 
     def _locate_time(self, time):
-        first_time = self._ds.time[self._ds.time - time < self._time_interval][0]
+        first_time = self._ds.time[np.abs(self._ds.time - time) < self._time_interval][0]
         second_time = first_time + self._time_interval
         if second_time > self._ds.time[-1]:
             second_time = self._ds.time[-1]
@@ -68,6 +68,7 @@ class DfsuWaterDepth(GnomeId):
                         first_value[i] = second_value[i] = 0.5                                                
 
                 interpolated_value = first_value + (second_value - first_value) * (time - first_time) / self._time_interval
+                
                 return interpolated_value, coordinates
             except Exception as exc:
                 return None, None

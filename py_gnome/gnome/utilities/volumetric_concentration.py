@@ -29,8 +29,12 @@ def compute_volumetric_concentration(sc, water_depth:DfsuWaterDepth, location:Co
         #save depth to position z so it will be wrote to the depth column in shapefile
         for k, p in enumerate(sc['positions']):
             p[2] = water_depth_value[k]
-
-        sc['volumetric_concentration'] = np.divide(sc['surface_concentration'], water_depth_value)
+            
+        # Surface concentration comes in kg/particle - we need to multily by 1e^6 to convert 
+        # in mg/particle so that the final result is in mg/L
+        #kg2mg = 1000000.0 # in ug/L
+        kg2mg = 1000.0     # in mg/L
+        sc['volumetric_concentration'] = np.divide(sc['surface_concentration']*kg2mg, water_depth_value)
 
         #interpolation for point of interest
         if location is not None:
@@ -38,14 +42,14 @@ def compute_volumetric_concentration(sc, water_depth:DfsuWaterDepth, location:Co
                 location.transform(water_depth.project_string)
             
             #the distance threshold for the interpolation
-            #100m is used here. If the the projection is long/lat, it's 0.001 degree.
+            #100m is used here. If the the projection is long/lat, it's 0.001 degree.  perhaps 0.002 would be better
             threshold = 100
             if not water_depth.isProjection:
-                threshold = 0.001
+                threshold = 0.0025  
 
             idw_tree = Tree2(coordinates, sc['volumetric_concentration'], distance_threshold = threshold)  # scatter data points
             sc['volumetric_concentration_poi'] = idw_tree(location.xy)[0]
-            print(f"Volumetric Concentration: {sc['volumetric_concentration_poi']}")
+            #print(f"Volumetric Concentration: {sc['volumetric_concentration_poi']}")
 
 
 class Tree2(object):

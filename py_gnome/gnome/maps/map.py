@@ -550,7 +550,8 @@ class ParamMap(GnomeMap):
         :return:
          - Always returns False-- no land in this implementation
         """
-        return self.on_map(coord) and points_in_poly(self.land_points, coord)
+        
+        return False
 
     def in_water(self, coord):
         """
@@ -732,8 +733,8 @@ class RasterMap(GnomeMap):
     def __init__(self,
                  raster=None,
                  projection=None,
-                 refloat_halflife=1,
-                 **kwargs):
+                 refloat_halflife=0,   # BH 1,
+                  **kwargs):
         """
         create a new RasterMap
 
@@ -924,8 +925,9 @@ class RasterMap(GnomeMap):
 
         .. note:: to_pixel() converts to array of points...
         """
-        return self._on_land_pixel(self.projection.to_pixel(coord,
-                                                            asint=True)[0])
+        return self._on_land_pixel(self.projection.to_pixel(coord, asint=True)[0])
+        
+        
     # does not appear to be used anymore
     # def _on_land_pixel_array(self, coords):
     #     """
@@ -984,7 +986,7 @@ class RasterMap(GnomeMap):
             It must have the following data arrays:
             ('prev_position', 'positions', 'last_water_pt', 'status_code')
         """
-
+      
         self.resurface_airborne_elements(sc)
 
         # pull the data from the sc
@@ -1027,6 +1029,24 @@ class RasterMap(GnomeMap):
             sc['mass'][sc['status_codes'] == oil_status.on_land].sum()
         sc.mass_balance['off_maps'] += \
             sc['mass'][sc['status_codes'] == oil_status.off_maps].sum()
+        
+        # BH added to refloat immediately if relfoat_halflife == 0
+        # if self._refloat_halflife == 0.0:
+        #     r_idx = np.where(sc['status_codes'] == oil_status.on_land)[0]
+
+        #     if r_idx.size == 0:  # no particles on land
+        #         return
+            
+        #     if r_idx.size > 0:
+        #         # check is not required, but why do this operation if no particles
+        #         # need to be refloated
+        #         #sc['positions'][r_idx] = sc['last_water_positions'][r_idx]
+        #         #sc['status_codes'][r_idx] = oil_status.in_water
+        #         sc['positions'][r_idx] = start_pos[r_idx]
+        #         sc['last_water_positions'][r_idx] = last_water_positions[r_idx]
+        #         sc['next_positions'][r_idx] = last_water_positions[r_idx]
+        #         sc['status_codes'][r_idx] = oil_status.in_water
+                
 
     def refloat_elements(self, spill_container, time_step, model_time=None):
         """
@@ -1136,7 +1156,7 @@ class MapFromBNA(RasterMap):
 
     def __init__(self,
                  filename,
-                 raster_size=4096 * 4096,
+                 raster_size=12288 *  12288, # BH replaced with 144 MB - 4096 * 4096,
                  map_bounds=None,
                  spillable_area=None,
                  shift_lons=0,
