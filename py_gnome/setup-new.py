@@ -453,7 +453,7 @@ elif sys.platform == "win32":
     static_lib_files = None
     if setuptools.__version__ > '55':
         static_lib_files = [os.path.join(target_path(),
-                                         'Release', 'lib_gnome',
+                                        'Release', 'lib_gnome',
                                         'cy_basic_types'+ win_comp_modules_ext)]
     else:
         static_lib_files = [os.path.join(target_path(),
