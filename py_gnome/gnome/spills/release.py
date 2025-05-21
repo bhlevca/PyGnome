@@ -8,7 +8,6 @@ import functools
 import math
 import warnings
 import numpy as np
-import shapefile as shp
 # import trimesh # making this optional
 import geojson
 import zipfile
@@ -32,11 +31,11 @@ from colander import (String, SchemaNode, SequenceSchema, drop, Int, Float,
 
 from gnome.persist.base_schema import ObjTypeSchema, WorldPoint, FeatureCollectionSchema
 from gnome.persist.extend_colander import LocalDateTime, FilenameSchema
-from gnome.persist.validators import convertible_to_seconds
 
 from gnome.basic_types import world_point_type
 from gnome.array_types import gat
 from gnome.utilities.plume import Plume, PlumeGenerator
+
 
 from gnome.outputters import NetCDFOutput
 from gnome.gnomeobject import GnomeId
@@ -47,7 +46,10 @@ from gnome.environment.gridded_objects_base import Time
 from gnome.weatherers.spreading import FayGravityViscous
 from gnome.environment import Water
 from gnome.constants import gravity
-from gnome.exceptions import ReferencedObjectNotSet
+from gnome.ops import default_constants
+
+from gnome.utilities.time_utils import TZOffset, TZOffsetSchema
+#from gnome.exceptions import ReferencedObjectNotSet
 from .initializers import (InitRiseVelFromDropletSizeFromDist,
                            InitRiseVelFromDist)
 
@@ -57,12 +59,9 @@ class StartPositions(SequenceSchema):
     start_position = WorldPoint()
 
 class BaseReleaseSchema(ObjTypeSchema):
-    release_time = SchemaNode(
-        LocalDateTime(), validator=convertible_to_seconds,
-    )
+    release_time = SchemaNode(LocalDateTime())
     end_release_time = SchemaNode(
         LocalDateTime(), missing=drop,
-        validator=convertible_to_seconds,
         save=True, update=True
     )
     num_elements = SchemaNode(Int(), missing=drop)
@@ -72,6 +71,7 @@ class BaseReleaseSchema(ObjTypeSchema):
     )
     custom_positions = StartPositions(save=True, update=True)
     centroid = WorldPoint(save=False, update=False, read_only=True)
+    timezone_offset = TZOffsetSchema()
 
 
 class PointLineReleaseSchema(BaseReleaseSchema):
@@ -108,6 +108,7 @@ class Release(GnomeId):
                  custom_positions=None,
                  release_mass=0,
                  retain_initial_positions=False,
+                 timezone_offset=TZOffset(),
                  **kwargs):
         """
         Required Arguments:
@@ -139,7 +140,7 @@ class Release(GnomeId):
         :type release_mass: integer
 
         :param retain_initial_positions: Optional. If True, each LE will retain
-            information about it's originally released position
+            information about its originally released position
         :type retain_initial_positions: boolean
         """
         self._num_elements = self._num_per_timestep = None
@@ -162,6 +163,7 @@ class Release(GnomeId):
         self.retain_initial_positions = retain_initial_positions
         self.rewind()
         super(Release, self).__init__(**kwargs)
+        self._timezone_offset=timezone_offset
         self.array_types.update({'positions': gat('positions'),
                                  'mass': gat('mass'),
                                  'init_mass': gat('mass'),
@@ -176,7 +178,35 @@ class Release(GnomeId):
 
         self._previously_released = 0.0
         self.cumulative_time_scale = SPREADING_CUMULATIVE_TIME_SCALE
-
+        
+    @property
+    def timezone_offset(self):
+        return self._get_timezone_offset()
+    
+    def _get_timezone_offset(self):
+        return self._timezone_offset
+    
+    @timezone_offset.setter
+    def timezone_offset(self, value):
+        #Due to the possibility of multiple time objects, we need to check for and set the offset
+        #for all of them. Subclasses should re-implement this as necessary to maintain consistency
+        if value is None or isinstance(value, TZOffset):
+            self._set_timezone_offset(value)
+        else:
+            raise ValueError("timezone_offset must be set with a TZOffset object or None")
+    
+    def _set_timezone_offset(self, tzo):
+        if tzo is None:
+            tzo = TZOffset(offset=None, title="No Timezone Specified")
+        if self._timezone_offset is not None and self._timezone_offset.offset is not None:
+            #original offset is non-None value, so we need to adjust the release time
+            if tzo.offset is not None:
+                #but only if the new value is not None
+                off =  timedelta(hours=tzo.offset) - timedelta(hours=self._timezone_offset.offset)
+                self.release_time = self.release_time + off
+                self.end_release_time = self.end_release_time + off
+        self._timezone_offset = tzo
+        
     def __repr__(self):
         return ('{0.__class__.__module__}.{0.__class__.__name__}('
                 'release_time={0.release_time!r}, '
@@ -319,14 +349,14 @@ class Release(GnomeId):
             # This is a special case, when the release is short enough a single
             # timestep encompasses the whole thing.
             if self.release_duration == 0:
-                t = Time([self.release_time,
-                          self.end_release_time + timedelta(seconds=1)])
+                t = Time(data=[self.release_time, self.end_release_time + timedelta(seconds=1)])
             else:
-                t = Time([self.release_time, self.end_release_time])
+                t = Time(data=[self.release_time, self.end_release_time])
         else:
-            t = Time([self.release_time + timedelta(seconds=ts * step)
+            t = Time(data=[self.release_time + timedelta(seconds=ts * step)
                       for step in range(0, num_ts + 1)])
             t.data[-1] = self.end_release_time
+        
         if self.release_duration == 0:
             self._release_ts = TimeseriesData(name=self.name+'_release_ts',
                                               time=t,
@@ -355,6 +385,9 @@ class Release(GnomeId):
         '''
         if self._prepared:
             self.rewind()
+        if ts < 1 and (self.end_release_time != self.release_time):
+            raise ValueError('Backwards run is not valid for continuous releases.  \
+                Use an instantaneous release or run forwards.')
         if self.LE_timestep_ratio(ts) < 1:
             raise ValueError('Not enough LEs: Number of LEs must at least \
                 be equal to the number of timesteps in the release')
@@ -403,20 +436,48 @@ class Release(GnomeId):
 
     def initialize_LEs_post_substance(self, to_rel, sc, start_time, end_time, environment):
 
-        # compute initial spreading area based terminal oil thickness
+        # compute initial spreading area based on Fay
         sl = slice(-to_rel, None, 1)
 
         if sc.substance.is_weatherable:
            if environment['water'] is not None:
               water = environment['water']
            else:
-              raise ReferencedObjectNotSet("water object not found in environment collection")
+              water = Water(default_constants.default_water_temperature)
+              #raise ReferencedObjectNotSet("water object not found in environment collection")
 
-           visc = sc.substance.kvis_at_temp(temp_k=water.get('temperature'))
-           thickness_limit = FayGravityViscous.get_thickness_limit(visc)
+           spread = FayGravityViscous(water=water)
+           spread.prepare_for_model_run(sc)
+           spread._set_init_relative_buoyancy(sc.substance)
 
-           sc['fay_area'][sl] = (sc['init_mass'][sl] / sc['density'][sl]) / thickness_limit
+           # compute release rate
+           if self.release_duration > 0:
+            sc['release_rate'][sl] = sum(sc['init_mass'][sl] / sc['density'][sl]) / (end_time-start_time).total_seconds()
+           else:
+            sc['release_rate'][sl] = np.nan
+
+           if end_time <= self.release_time + self.cumulative_time_scale:
+            self._previously_released = self._previously_released + sum(sc['init_mass'][sl] / sc['density'][sl])
+           # compute release rate
+
+           # change the computation of bulk_init_volume
+           if not np.isnan(sc['release_rate'][sl][0]):
+                sc['bulk_init_volume'][sl] = self._previously_released
+           else:
+                sc['bulk_init_volume'][sl] = sum(sc['init_mass'][sl] / sc['density'][sl])
+           # change the computation of bulk_init_volume
+
+           if sc['bulk_init_volume'][sl][0] > 0:
+                sc['vol_frac_le_st'][sl] = (sc['init_mass'][sl] / sc['density'][sl]) / sc['bulk_init_volume'][sl]
+           else:
+                sc['vol_frac_le_st'][sl] = 0
+
+           init_blob_area = spread.init_area(sc.substance.kvis_at_temp(temp_k=water.get('temperature')), spread._init_relative_buoyancy, sc['bulk_init_volume'][sl][0])
+
+           sc['fay_area'][sl] = init_blob_area * sc['vol_frac_le_st'][sl]
            sc['area'][sl] = sc['fay_area'][sl]
+        # compute initial spreading area based on Fay
+
 
 class PointLineRelease(Release):
     """
@@ -507,7 +568,10 @@ class PointLineRelease(Release):
 
     @property
     def centroid(self):
-        return self.start_position
+        if self.is_pointsource:
+            return self.start_position
+        else:
+            return (self.start_position + self.end_position)/2.0
 
     @property
     def start_position(self):
@@ -585,6 +649,9 @@ class PointLineRelease(Release):
         '''
         # if time_step == 0:
         #     time_step = 1  # to deal with initializing position in instantaneous release case
+        if self.release_duration == 0 and start_time != end_time: # special case for instantaneous spill with release after model start
+            if self.release_time <= end_time and self.release_time>=start_time:
+                 start_time = end_time = self.release_time
         if start_time == end_time:
             end_time += timedelta(seconds=1)
         sl = slice(-to_rel, None, 1)
@@ -609,49 +676,6 @@ class PointLineRelease(Release):
         if self.retain_initial_positions:
             sc['init_positions'][sl] = sc['positions'][sl]
 
-    def initialize_LEs_post_substance(self, to_rel, sc, start_time, end_time, environment):
-
-        # compute initial spreading area based on Fay
-        sl = slice(-to_rel, None, 1)
-
-        if sc.substance.is_weatherable:
-           if environment['water'] is not None:
-              water = environment['water']
-           else:
-              raise ReferencedObjectNotSet("water object not found in environment collection")
-
-           spread = FayGravityViscous(water=water)
-           spread.prepare_for_model_run(sc)
-           spread._set_init_relative_buoyancy(sc.substance)
-
-           # compute release rate
-           if self.release_duration > 0:
-            sc['release_rate'][sl] = sum(sc['init_mass'][sl] / sc['density'][sl]) / (end_time-start_time).total_seconds()
-           else:
-            sc['release_rate'][sl] = np.nan
-
-           if end_time <= self.release_time + self.cumulative_time_scale:
-            self._previously_released = self._previously_released + sum(sc['init_mass'][sl] / sc['density'][sl])
-           # compute release rate
-
-           # change the computation of bulk_init_volume
-           if not np.isnan(sc['release_rate'][sl][0]):
-                sc['bulk_init_volume'][sl] = self._previously_released
-           else:
-                sc['bulk_init_volume'][sl] = sum(sc['init_mass'][sl] / sc['density'][sl])
-           # change the computation of bulk_init_volume
-
-           if sc['bulk_init_volume'][sl][0] > 0:
-                sc['vol_frac_le_st'][sl] = (sc['init_mass'][sl] / sc['density'][sl]) / sc['bulk_init_volume'][sl]
-           else:
-                sc['vol_frac_le_st'][sl] = 0
-
-           init_blob_area = spread.init_area(sc.substance.kvis_at_temp(temp_k=water.get('temperature')), spread._init_relative_buoyancy, sc['bulk_init_volume'][sl][0])
-
-           sc['fay_area'][sl] = init_blob_area * sc['vol_frac_le_st'][sl]
-           sc['area'][sl] = sc['fay_area'][sl]
-        # compute initial spreading area based on Fay
-
 
 class PolygonReleaseSchema(BaseReleaseSchema):
     filename = FilenameSchema(save=False, update=False, test_equal=False, missing=drop)
@@ -662,11 +686,10 @@ class PolygonRelease(Release):
     """
     A release of elements into a set of provided polygons.
 
-    When X particles are determined to be released, they are into the polygons
-    randomly. For each LE, pick a polygon, weighted by it's proportional area
-    and place the LE randomly within it. By default the PolygonRelease uses
-    simple area for polygon weighting. Other classes (NESDISRelease for example)
-    may use other weighting functions.
+    When X particles are determined to be released, they are placed into the polygons
+    randomly. For each LE, pick a polygon, weighted by its proportional area and
+    place the LE randomly within it. By default the PolygonRelease uses simple area
+    for polygon weighting. Weights may be passed in instead.
     """
     _schema = PolygonReleaseSchema
 
@@ -678,20 +701,22 @@ class PolygonRelease(Release):
                  thicknesses=None,
                  **kwargs):
         """
-        Required Arguments:
+        Required Arguments - either a filename, or features, or polygons
 
-        :param release_time: time the LEs are released (datetime object)
-        :type release_time: datetime.datetime
+        :param filename: shapefile
+        :type filename: string name of a zip file.
 
         :param polygons: polygons to use in this release
         :type polygons: list of shapely.Polygon or shapely.MultiPolygon.
 
+        :param features: feature collection from a shapefile
+
+        :param release_time: time the LEs are released (datetime object)
+        :type release_time: datetime.datetime
+
         Optional arguments:
 
-        :param filename: (optional) shapefile
-        :type filename: string name of a zip file. Polygons loaded are concatenated after polygons from kwarg
-
-        :param weights: (optional) LE placement probability weighting for each polygon. Must be the same length as the polygons kwarg, and must sum to 1. If None, weights are generated at runtime based on area proportion.
+        :param weights: LE placement probability weighting for each polygon. Must be the same length as the polygons kwarg, and must sum to 1. If None, weights are generated at runtime based on area proportion.
 
         :param num_elements: total number of elements to be released
         :type num_elements: integer default 1000
@@ -699,10 +724,10 @@ class PolygonRelease(Release):
         :param num_per_timestep: fixed number of LEs released at each timestep
         :type num_elements: integer
 
-        :param end_release_time=None: optional -- for a time varying release, the end release time. If None, then release is instantaneous
+        :param end_release_time=None: for a time varying release, the end release time. If None, then release is instantaneous
         :type end_release_time: datetime.datetime
 
-        :param release_mass=0: optional. This is the mass released in kilograms.
+        :param release_mass=0: This is the mass released in kilograms.
         :type release_mass: integer
         """
         if filename is not None and features is not None:
@@ -816,7 +841,7 @@ class PolygonRelease(Release):
                 del feat.properties['weight']
             return
         if self.thicknesses is not None:
-            raise ValueError('Cannot assign thicknesses to {} due to previously assigned weights'.format(self.name))
+            raise ValueError('Cannot assign weights to {} due to previously assigned thicknesses'.format(self.name))
         for feat, w in zip(self.features[:], vals):
             feat.properties['weight'] = w
 
@@ -934,7 +959,7 @@ class PolygonRelease(Release):
         rt = []
         for p, w, t in zip(self.polygons, weights, thicknesses):
             if isinstance(p, shapely.geometry.MultiPolygon):
-                for subp in p:
+                for subp in p.geoms:
                     rw.append(w)
                     rt.append(t)
             else:
@@ -958,8 +983,12 @@ def GridRelease(release_time, bounds, resolution):
     Only 2-d for now
 
     :param bounds: bounding box of region you want the elements in:
-                   ((min_lon, min_lat),
-                    (max_lon, max_lat))
+
+                   ::
+
+                     ((min_lon, min_lat),
+                      (max_lon, max_lat))
+
     :type bounds: 2x2 numpy array or equivalent
 
     :param resolution: resolution of grid -- it will be a resolution X resolution grid
@@ -984,7 +1013,7 @@ class NESDISReleaseSchema(PolygonReleaseSchema):
         SchemaNode(Float()), save=False, read_only=True, update=False
     )
     oil_types = SequenceSchema(
-        SchemaNode(String()), save=False
+        SchemaNode(String()), save=False, read_only=True
     )
 
 
@@ -998,6 +1027,7 @@ class NESDISRelease(PolygonRelease):
     def __init__(self,
                  filename=None,
                  features=None,
+                 timezone_offset=TZOffset(offset=0, title='UTC'),
                  **kwargs):
         """
         :param filename: NESDIS shapefile
@@ -1005,6 +1035,9 @@ class NESDISRelease(PolygonRelease):
 
         :param feature: FeatureCollection representation of a NESDIS shapefile
         :type feature: geojson.FeatureCollection
+        
+        :param timezone_offset:
+        :type timezone_offset: gnome.environment.time.TZOffset defaults to UTC
 
         """
 
@@ -1028,6 +1061,7 @@ class NESDISRelease(PolygonRelease):
 
         super(NESDISRelease, self).__init__(
             features=features,
+            timezone_offset=timezone_offset,
             **kwargs
         )
 
@@ -1418,6 +1452,9 @@ def release_from_splot_data(release_time, filename):
     '''
     Initialize a release object from a text file containing splots.
     The file contains 3 columns with following data:
+
+    ::
+
         [longitude, latitude, num_LEs_per_splot/5000]
 
     For each (longitude, latitude) release num_LEs_per_splot points

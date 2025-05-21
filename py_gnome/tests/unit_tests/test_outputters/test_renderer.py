@@ -418,7 +418,7 @@ def test_animation_in_model(output_dir):
     """
     model = gs.Model()
     model.movers += gs.RandomMover()
-    model.spills += gs.surface_point_line_spill(num_elements=100,
+    model.spills += gs.point_line_spill(num_elements=100,
                                                 start_position=(0, 0),
                                                 release_time=model.start_time,
                                                 )
@@ -431,7 +431,99 @@ def test_animation_in_model(output_dir):
 
     model.full_run()
 
-#    assert False
+#@pytest.mark.xfail
+# NOTE: This currently fails because the model isn't allowing partial runs to output
+def test_model_stops_in_middle(output_dir):
+    """
+    If the model stops in the middle of a run:
+    e.g. runs out of data, it should still output results.
+    """
+    model = gs.Model()
 
-# # if __name__ == '__main__':
-# #     test_set_viewport()
+    model.spills += gs.point_line_spill(num_elements=100,
+                                                start_position=(0, 0),
+                                                release_time=model.start_time,
+                                                )
+    odir = os.path.join(output_dir, "stop_in_middle")
+
+    # set up a WindMover that's too short.
+    times = [model.start_time + (gs.minutes(30) * i) for i in range(3)]
+    # long enough record
+    # times = [model.start_time + (gs.minutes(30) * i) for i in range(5)]
+
+    winds = gs.wind_from_values([(dt, 5, 90) for dt in times])
+
+    model.movers += gs.WindMover(winds)
+    model.outputters += Renderer(output_dir=odir,
+                                 image_size=(400, 400),
+                                 viewport=(((-0.02, -0.02), (0.02, 0.02))),
+                                 formats=['gif']
+                                 )
+
+    print(model.movers)
+    # run the model
+    with pytest.raises(Exception):
+        model.full_run()
+
+    # check the gif has been created
+    assert os.path.exists(os.path.join(odir, "anim.gif"))
+
+
+def test_particle_color_with_depth(output_dir):
+    """
+    render the basemap
+    """
+    r = Renderer(bna_star,
+                 output_dir,
+                 image_size=(600, 600),
+                 draw_back_to_fore=True,
+                 formats=['png'],
+                 depth_colors='inferno')
+
+    r.draw_background()
+
+    BB = r.map_BB
+    (min_lon, min_lat) = BB[0]
+    (max_lon, max_lat) = BB[1]
+
+    N = 100
+    # create some random particle positions:
+    lon = random.uniform(min_lon, max_lon, (N, ))
+    lat = random.uniform(min_lat, max_lat, (N, ))
+    depth = np.linspace(0,100,N)
+    # create a sc
+    sc = sample_sc_release(num_elements=N)
+    sc['positions'][:, 0] = lon
+    sc['positions'][:, 1] = lat
+    sc['positions'][:, 2] = depth
+
+    r.cache = FakeCache(sc)
+
+    r.write_output(0)
+    r.save_foreground(os.path.join(output_dir, 'map_and_elements.png'))
+
+    r.draw_back_to_fore = False
+    r.clear_foreground()
+    r.write_output(1)
+    r.save_foreground(os.path.join(output_dir, 'elements_with_depth.png'))
+
+
+def test_particle_color_with_depth(output_dir):
+    """
+    render the basemap
+    """
+    r1 = Renderer(bna_star,
+                 output_dir,
+                 image_size=(600, 600),
+                 draw_back_to_fore=True,
+                 formats=['png'],
+                 depth_colors='inferno') #'rainbow')
+
+    r2 = Renderer(bna_star,
+                 output_dir,
+                 image_size=(600, 600),
+                 draw_back_to_fore=True,
+                 formats=['png'],
+                 depth_colors='inferno')
+
+    assert np.all(r1._color_ramp.color_index == r2._color_ramp.color_index)

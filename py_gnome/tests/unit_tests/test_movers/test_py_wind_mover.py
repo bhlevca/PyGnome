@@ -139,7 +139,6 @@ def test_default_props():
     assert py_wind.uncertain_speed_scale == 2.
     assert py_wind.uncertain_angle_scale == 0.4
     assert py_wind.scale_value == 1
-    #assert pywindr.time_offset == 0
     assert py_wind.default_num_method == 'RK2'
     #assert py_wind.grid_topology == None
 
@@ -154,9 +153,22 @@ def test_scale_value():
     assert py_wind.scale_value == 0
 
 
-def test_with_PointWind():
+def test_get_grid_bounds():
     """
-    test that it works right with a PointWind
+    test grid bounds are not just defaults
+    """
+
+    bounds = py_wind.get_bounds()
+
+    assert bounds[0][0] > -360 and bounds[0][1] < 360
+    assert bounds[0][1] > -90 and bounds[1][1] < 90
+
+
+def test_with_point_Wind():
+    """
+    test that it works right with a Wind
+
+    (point wind, or constant wind ...)
 
     (using constant wind to kick it off)
     """
@@ -234,14 +246,13 @@ def test_save_load():
     """
     test save/loading
     """
-    saveloc = tempfile.mkdtemp()
-    wind = GridWind.from_netCDF(wind_file)
-    py_wind = WindMover(wind=wind)
-    save_json, zipfile_, _refs = py_wind.save(saveloc)
+    with tempfile.mkdtemp() as saveloc:
+        wind = GridWind.from_netCDF(wind_file)
+        py_wind = WindMover(wind=wind)
+        save_json, zipfile_, _refs = py_wind.save(saveloc)
 
-    assert validate_save_json(save_json, zipfile.ZipFile(zipfile_), py_wind)
+        assert validate_save_json(save_json, zipfile.ZipFile(zipfile_), py_wind)
 
-    loaded = WindMover.load(zipfile_)
+        loaded = WindMover.load(zipfile_)
 
     assert loaded == py_wind
-

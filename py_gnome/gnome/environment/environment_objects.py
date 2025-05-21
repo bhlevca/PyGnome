@@ -1,12 +1,16 @@
 
 import copy
 from datetime import datetime
+import math
 
 import netCDF4 as nc4
 import numpy as np
 
+from gnome.utilities.inf_datetime import MinusInfTime, InfTime
+
 from gnome.persist import (drop,
                            Boolean,
+                           Float,
                            SchemaNode,
                            ObjTypeSchema,
                            FilenameSchema,
@@ -27,11 +31,114 @@ from .gridded_objects_base import (Time,
                                    VectorVariableSchema,
                                    LocalDateTime,
                                    )
-from gnome.persist.validators import convertible_to_seconds
 
 from .gridcur import init_from_gridcur, GridCurReadError
 
 from .names import nc_names
+
+
+class SteadyUniformCurrentSchema(ObjTypeSchema):
+    # note: units is not in the schema
+    #        only m/s is supported via serialization
+    #   It's a bit tricky to keep things in sync otherwise
+    speed = SchemaNode(Float(), save=True, update=True)
+    direction = SchemaNode(Float(), save=True, update=True)
+    data_start = SchemaNode(LocalDateTime(), read_only=True)
+    data_stop = SchemaNode(LocalDateTime(), read_only=True)
+
+
+class SteadyUniformCurrent(Environment):
+    """
+    Simple current: the same at all time and places
+    """
+    _ref_as = 'current'
+    _schema = SteadyUniformCurrentSchema
+
+    data_start =  MinusInfTime
+    data_stop =  InfTime
+
+    def __init__(self,
+                 speed,
+                 direction,
+                 units='m/s',
+                 name = "Steady Uniform Current"):
+        """
+        Create a steady, uniform current (same at all time and places)
+
+        :param speed: speed of the current
+
+        :param direction: direction of the current (direction to, not from), in degrees from north
+
+        :param units="m/s": units of speed: defaults to "m/s"
+
+        :param name="Steady Uniform Current": optional name for the current
+        """
+        super().__init__(self, name=name)
+        if units != 'm/s':
+            speed = uc.convert(units, 'm/s', speed)
+        self.units = 'm/s'
+        self._speed = speed
+        self._direction = direction
+        self._set_uv()
+
+    def __repr__(self):
+        return (f"{self.__class__.__name__}(speed={self.speed}, "
+                f"direction={self.direction}, units='m/s', name={self.name!r})")
+
+    def _set_uv(self):
+        dir = math.radians(self._direction)
+        # rounding so that, e.g. cos(90 degrees) == 0.0
+        self._u = self._speed * round(math.sin(dir), 15)
+        self._v = self._speed * round(math.cos(dir), 15)
+
+    @property
+    def speed(self):
+        return self._speed
+
+    @speed.setter
+    def speed(self, speed):
+        self._speed = speed
+        self._set_uv()
+
+    @property
+    def direction(self):
+        return self._direction
+
+    @direction.setter
+    def direction(self, direction):
+        self._direction = direction
+        self._set_uv()
+
+
+    @property
+    def u(self):
+        return self._u
+
+    @property
+    def v(self):
+        return self._v
+
+
+    def at(self, points, time, *, units=None, extrapolate=None, **kwargs):
+        """
+        Find the value of the property at positions of points at time T
+
+        :param points: will be ignored
+
+        :param time: will be ignored
+
+        :param units='m/s': units the values will be returned in (or converted to)
+                            if None, the default units for the environment type will be used.
+        :type units: string such as ('m/s', 'knots', etc)
+
+        :return: returns an Nx2 arrary is points is Nx2, Nx3 is points is Nx3
+        """
+        dimensionality = len(points[0])
+        vel = np.zeros((len(points), dimensionality), dtype=np.float64)
+        vel[:, 0] = self.u
+        vel[:, 1] = self.v
+        return vel
+
 
 @combine_signatures
 class VelocityTS(TimeseriesVector):
@@ -83,6 +190,7 @@ class VelocityGrid(VectorVariable):
     def __init__(self, angle=None, **kwargs):
         """
             :param angle: scalar field of cell rotation angles (for rotated/distorted grids)
+            :type angle: gridded_objects_base.Variable or None
         """
 
         if 'variables' in kwargs:
@@ -105,23 +213,29 @@ class VelocityGrid(VectorVariable):
 
             if df is not None and 'angle' in df.variables.keys():
                 # Unrotated ROMS Grid!
+                units = df['angle'].units if hasattr(df['angle'], 'units') else 'radians'
                 self.angle = Variable(name='angle',
-                                      units='radians',
+                                      units=units,
                                       time=Time.constant_time(),
                                       grid=kwargs['grid'],
                                       data=df['angle'])
+                self.angle._gnome_unit = 'radians'
             else:
                 self.angle = None
         else:
             self.angle = angle
 
         super(VelocityGrid, self).__init__(**kwargs)
+        
+    def _set_timezone_offset(self, offset):
+        super(VelocityGrid, self)._set_timezone_offset(offset)
+        if self.angle is not None:
+            self.angle._set_timezone_offset(offset)
 
 
     def get_data_vectors(self):
         '''
         return array of shape (2, time_slices, len_linearized_data)
-        first is magnitude, second is direction
         '''
 
         if(hasattr(self, 'angle') and self.angle):
@@ -137,9 +251,13 @@ class VelocityGrid(VectorVariable):
             if 'degree' in self.angle.units:
                 raw_ang = raw_ang * np.pi/180.
 
-            ctr_mask = gridded.utilities.gen_celltree_mask_from_center_mask(self.grid.center_mask, angle_padding_slice)
+            if self.grid.center_mask is not None:
+                ctr_mask = gridded.utilities.gen_celltree_mask_from_center_mask(self.grid.center_mask, angle_padding_slice)
+                ctr_mask = ctr_mask.reshape(-1)
+            else:
+                ctr_mask = False
             ang = raw_ang.reshape(-1)
-            ang = np.ma.MaskedArray(ang, mask = ctr_mask.reshape(-1))
+            ang = np.ma.MaskedArray(ang, mask = ctr_mask)
             ang = ang.compressed()
 
             x = lin_u[:] * np.cos(ang) - lin_v[:] * np.sin(ang)
@@ -150,6 +268,17 @@ class VelocityGrid(VectorVariable):
 
         else:
             return super(VelocityGrid, self).get_data_vectors()
+
+    def get_bounds(self):
+        '''
+            Return a bounding box surrounding the grid data.
+        '''
+        lon_max  = self.grid.node_lon.max()
+        lon_min  = self.grid.node_lon.min()
+        lat_max  = self.grid.node_lat.max()
+        lat_min  = self.grid.node_lat.min()
+
+        return ((lon_min, lat_min), (lon_max, lat_max))
 
 
 class WindTS(VelocityTS, Environment):
@@ -320,12 +449,12 @@ class WaterDensityTS(TimeseriesData, Environment):
                                 data=data)
 
 
-class GridSediment(Variable, Environment):
+class GridSediment(Variable):
     _gnome_unit = 'ppt'
     default_names = nc_names['grid_sediment']['default_names'] #['sand_06']
 
 
-class IceConcentration(Variable, Environment):
+class IceConcentration(Variable):
     _ref_as = ['ice_concentration', 'ice_aware']
     default_names = nc_names['ice_concentration']['default_names'] #['ice_fraction', 'aice' ]
     cf_names = nc_names['ice_concentration']['cf_names'] #['sea_ice_area_fraction']
@@ -341,7 +470,7 @@ class Bathymetry(Variable):
     cf_names = nc_names['bathymetry']['cf_names'] #['depth']
 
 
-class GridCurrent(VelocityGrid, Environment):
+class GridCurrent(VelocityGrid):
     """
     GridCurrent is VelocityGrid that adds specific stuff for currents:
 
@@ -366,16 +495,19 @@ class GridCurrent(VelocityGrid, Environment):
 #                      'surface_northward_sea_water_velocity'],
 #                'w': ['upward_sea_water_velocity']}
 
-    def at(self, points, time, *args, **kwargs):
+    def at(self, points, time, *, units=None, extrapolate=None, **kwargs):
         '''
         Find the value of the property at positions P at time T
 
         :param points: Coordinates to be queried (P)
         :type points: Nx2 or Nx3 array of double
+        
         :param time: The time at which to query these points (T)
         :type time: datetime.datetime object
+        
         :param units: units the values will be returned in (or converted to)
         :type units: string such as ('m/s', 'knots', etc)
+        
         :param extrapolate: if True, extrapolation will be supported
         :type extrapolate: boolean (True or False)
 
@@ -396,19 +528,19 @@ class GridCurrent(VelocityGrid, Environment):
             if res is not None:
                 return res
 
-        extrapolate = self.extrapolation_is_allowed
+        if extrapolate is None:
+            extrapolate = self.extrapolation_is_allowed
+
 
         value = super(GridCurrent, self).at(points, time,
+                                            units=units,
                                             extrapolate=extrapolate,
                                             **kwargs)
 
         if self.angle is not None:
-            angs = (self.angle.at(points, time, extrapolate=extrapolate,
+            angs = (self.angle.at(points, time, units='radians', extrapolate=extrapolate,
                                   **kwargs)
                     .reshape(-1))
-
-            if 'degree' in self.angle.units:
-                angs = angs * np.pi/180.
 
             x = value[:, 0] * np.cos(angs) - value[:, 1] * np.sin(angs)
             y = value[:, 0] * np.sin(angs) + value[:, 1] * np.cos(angs)
@@ -416,7 +548,8 @@ class GridCurrent(VelocityGrid, Environment):
             value[:, 0] = x
             value[:, 1] = y
 
-        value[:, 2][points[:, 2] == 0.0] = 0
+        if points.shape[-1] == 3: #depth present in points
+            value[:, 2][points[:, 2] == 0.0] = 0 #set w velocity to 0 if depth is 0
 
         if _mem:
             self._memoize_result(points, time, value,
@@ -425,7 +558,7 @@ class GridCurrent(VelocityGrid, Environment):
         return value
 
 
-class GridWind(VelocityGrid, Environment):
+class GridWind(VelocityGrid):
     """
     Gridded winds -- usually from netcdf files from meteorological models.
 
@@ -462,12 +595,11 @@ class GridWind(VelocityGrid, Environment):
 
         self.wet_dry_mask = wet_dry_mask
 
-    def at(self, points, time,
-           coord_sys='uv', _auto_align=True, **kwargs):
+    def at(self, points, time, *, units=None, extrapolate=None, coord_sys='uv', _auto_align=True, **kwargs):
         '''
         Find the value of the property at positions P at time T
 
-        :param points: Coordinates to be queried (P)
+        :param points: Array of coordinates [(lon0, lat0), (lon1, lat1), ...] to be queried (P)
         :type points: Nx2 array of double
 
         :param time: The time at which to query these points (T)
@@ -511,8 +643,10 @@ class GridWind(VelocityGrid, Environment):
                 return self.transform_result(value, coord_sys)
 
         if value is None:
-            extrapolate = self.extrapolation_is_allowed
+            if extrapolate is None:
+                extrapolate = self.extrapolation_is_allowed
             value = super(GridWind, self).at(pts, time,
+                                             units=units,
                                              extrapolate=extrapolate,
                                              _auto_align=False, **kwargs)
 
@@ -521,6 +655,7 @@ class GridWind(VelocityGrid, Environment):
 
             if self.angle is not None:
                 angs = (self.angle.at(pts, time,
+                                      units='radians',
                                       extrapolate=extrapolate,
                                       _auto_align=False,
                                       **kwargs)
@@ -592,7 +727,7 @@ class LandMask(Variable):
 
         kwargs['data'] = data
 
-    def at(self, points, time, units=None, extrapolate=False,
+    def at(self, points, time, *, units=None, extrapolate=None,
            _hash=None, _mem=True, **kwargs):
 
         if _hash is None:
@@ -609,14 +744,17 @@ class LandMask(Variable):
         _time_idx = self.time.index_of(time)
         order = self.dimension_ordering
 
+        if extrapolate is None:
+            extrapolate = self.extrapolation_is_allowed
+
         if order[0] == 'time':
-            value = self._time_interp(points, time, extrapolate,
+            value = self._time_interp(points, time, units=units, extrapolate=extrapolate,
                                       _mem=_mem, _hash=_hash, **kwargs)
         elif order[0] == 'depth':
-            value = self._depth_interp(points, time, extrapolate,
+            value = self._depth_interp(points, time, units=units, extrapolate=extrapolate,
                                        _mem=_mem, _hash=_hash, **kwargs)
         else:
-            value = self._xy_interp(points, time, extrapolate,
+            value = self._xy_interp(points, time, units=units, extrapolate=extrapolate,
                                     _mem=_mem, _hash=_hash, **kwargs)
 
         if _mem:
@@ -626,7 +764,7 @@ class LandMask(Variable):
         return value
 
 
-class IceVelocity(VelocityGrid, Environment):
+class IceVelocity(VelocityGrid):
     _ref_as = ['ice_velocity', 'ice_aware']
     _gnome_unit = 'm/s'
     default_names = nc_names['ice_velocity']['default_names'] #{'u': ['ice_u','uice'],
@@ -702,27 +840,38 @@ class IceAwareCurrent(GridCurrent):
                          ice_velocity=None,
                          *args,
                          **kwargs):
+        
+        super(IceAwareCurrent, self).init_from_netCDF(
+            **kwargs
+        )
+        
         temp_fn = None
         if ice_file is not None:
             temp_fn = kwargs['filename']
             kwargs['filename'] = ice_file
-        if ice_concentration is None:
-            ice_concentration = IceConcentration.from_netCDF(**kwargs)
+            if ice_concentration is None:
+                ice_concentration = IceConcentration.from_netCDF(**kwargs)
+            if ice_velocity is None:
+                ice_velocity = IceVelocity.from_netCDF(**kwargs)
+        else:
+            
+            kwargs['time'] = self.time
+            kwargs['grid'] = self.grid
+            kwargs['depth'] = self.depth
+            if ice_concentration is None:
+                ice_concentration = IceConcentration.from_netCDF(**kwargs)
+                
+            kwargs['angle'] = self.angle
+            if ice_velocity is None:
+                ice_velocity = IceVelocity.from_netCDF(**kwargs)
 
-        if ice_velocity is None:
-            ice_velocity = IceVelocity.from_netCDF(**kwargs)
+        
+        self.ice_concentration = ice_concentration
+        self.ice_velocity = ice_velocity
 
-        if temp_fn is not None:
-            kwargs['filename'] = temp_fn
-
-        super(IceAwareCurrent, self).init_from_netCDF(
-            ice_concentration=ice_concentration,
-            ice_velocity=ice_velocity,
-            **kwargs
-        )
-
-    def at(self, points, time, *args, **kwargs):
-        extrapolate = self.extrapolation_is_allowed
+    def at(self, points, time, *, units=None, extrapolate=None, **kwargs):
+        if extrapolate is None:
+            extrapolate = self.extrapolation_is_allowed
         cctn = (self.ice_concentration.at(points, time,
                                             extrapolate=extrapolate, **kwargs)
                   .copy())
@@ -730,7 +879,8 @@ class IceAwareCurrent(GridCurrent):
 
         water_v = super(IceAwareCurrent, self).at(points,
                                                   time,
-                                                  *args,
+                                                  units=units,
+                                                  extrapolate=extrapolate,
                                                   **kwargs)
 
         if np.any(cctn >= 0.2):
@@ -744,7 +894,7 @@ class IceAwareCurrent(GridCurrent):
             ice_vel_factor[interp_mask] = ((ice_vel_factor[interp_mask] - 0.2) * 10) / 6
 
             vels = water_v.copy()
-            ice_v = self.ice_velocity.at(points, time, extrapolate=extrapolate, *args, **kwargs).copy()
+            ice_v = self.ice_velocity.at(points, time, units=units, extrapolate=extrapolate, **kwargs).copy()
             #assert len(vels.shape) == 2
 
             #deals with the >0.8 concentration case
@@ -753,6 +903,11 @@ class IceAwareCurrent(GridCurrent):
             return vels
         else:
             return water_v
+    
+    def _set_timezone_offset(self, offset):
+        super(IceAwareCurrent, self)._set_timezone_offset(offset)
+        self.ice_concentration._set_timezone_offset(offset)
+        self.ice_velocity._set_timezone_offset(offset)
 
 
 class IceAwareWind(GridWind):
@@ -774,24 +929,35 @@ class IceAwareWind(GridWind):
     @GridWind._get_shared_vars()
     def from_netCDF(cls,
                     ice_concentration=None,
-                    ice_velocity=None,
                     **kwargs):
+        iaw = (super(IceAwareWind, cls).from_netCDF(
+            **kwargs
+            )
+        )
+        kwargs['time'] = iaw.time
+        kwargs['grid'] = iaw.grid
+        kwargs['depth'] = iaw.depth
         if ice_concentration is None:
             ice_concentration = IceConcentration.from_netCDF(**kwargs)
+        iaw.ice_concentration = ice_concentration
+        
+        return iaw
 
-        if ice_velocity is None:
-            ice_velocity = IceVelocity.from_netCDF(**kwargs)
 
-        return (super(IceAwareWind, cls)
-                .from_netCDF(ice_concentration=ice_concentration,
-                             ice_velocity=ice_velocity,
-                             **kwargs))
+    def at(self, points, time, *, units=None, extrapolate=None, min_val=0, **kwargs):
+        """
+        :param min_val: Minimum value for wind speed. If computed wind speed is less than this
+                        value, it will be set to this value.
+        :type min_val: float
+        """
+        if extrapolate is None:
+            extrapolate = self.extrapolation_is_allowed
 
-    def at(self, points, time, min_val=0, *args, **kwargs):
-        extrapolate = self.extrapolation_is_allowed
-
-        cctn = self.ice_concentration.at(points, time, extrapolate=extrapolate, *args, **kwargs)
-        wind_v = super(IceAwareWind, self).at(points, time, *args, **kwargs)
+        cctn = self.ice_concentration.at(points, time, extrapolate=extrapolate, **kwargs)
+        wind_v = super(IceAwareWind, self).at(points, time,
+                                              units=units,
+                                              extrapolate=extrapolate,
+                                              **kwargs)
         wind_v[wind_v < min_val] = min_val
         #assert len(cctn.shape) == 2
 
@@ -816,6 +982,10 @@ class IceAwareWind(GridWind):
             return vels
         else:
             return wind_v
+    
+    def _set_timezone_offset(self, offset):
+        super(IceAwareWind, self)._set_timezone_offset(offset)
+        self.ice_concentration._set_timezone_offset(offset)
 
 
 
@@ -825,10 +995,8 @@ class FileGridCurrentSchema(ObjTypeSchema):
     )
     extrapolation_is_allowed = SchemaNode(Boolean())
 
-    data_start = SchemaNode(LocalDateTime(), read_only=True,
-                            validator=convertible_to_seconds)
-    data_stop = SchemaNode(LocalDateTime(), read_only=True,
-                           validator=convertible_to_seconds)
+    data_start = SchemaNode(LocalDateTime(), read_only=True)
+    data_stop = SchemaNode(LocalDateTime(), read_only=True)
 
 
 
@@ -890,6 +1058,9 @@ class FileGridCurrent(GridCurrent):
 
     @classmethod
     def new_from_dict(cls, serial_dict):
+        read_only_attrs = cls._schema().get_nodes_by_attr('read_only')
+
+        [serial_dict.pop(n, None) for n in read_only_attrs]
         return cls(filename=serial_dict.get('filename'),
                    extrapolation_is_allowed=serial_dict.get('extrapolation_is_allowed')  # noqa
                    )

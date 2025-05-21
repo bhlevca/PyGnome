@@ -5,14 +5,11 @@ import various names, and provides:
 
 initialize_console_log(level='debug')
 
-  set up the logger to dump to console.
-
-
+set up the logger to dump to console.
 """
-
-from itertools import chain
-
 import sys
+import os
+import pathlib
 
 import logging
 import json
@@ -20,15 +17,31 @@ import warnings
 
 import importlib
 
-import nucos as uc
+import nucos
 
 # just so it will be in the namespace.
 from .gnomeobject import GnomeId, AddLogger
 
-__version__ = '1.1.6'
+__version__ = "1.1.18dev"
 
+# set up to show DeprecationWarnings that come from PyGNOME
+warnings.filterwarnings("default",
+                        category=DeprecationWarning,
+                        module="gnome.*")
 
-# a few imports so that the basic stuff is there
+if os.name == 'nt':
+    # Get site-packages path from the current Python environment
+    import site
+    site_packages = next((p for p in site.getsitepackages() if 'site-packages' in p), None)
+
+    if site_packages:
+        dll_path = pathlib.Path(site_packages) / 'bin'
+        if dll_path.exists():
+            os.add_dll_directory(dll_path)
+
+#
+# A few imports so that the basic stuff is there
+#
 
 def check_dependency_versions():
     """
@@ -36,26 +49,33 @@ def check_dependency_versions():
 
     These are checked, as they are maintained by NOAA ERD, so may be installed
     from source, rather than managed by conda, etc.
+
+    ::
+
         gridded
         oillibrary
         nucos
         py_gd
         adios_db
+
     If the version is not at least as current as what's defined here
     a warning is displayed
     """
     def ver_check(required, installed):
         required = tuple(int(part) for part in required.split(".")[:3])
-        installed = tuple(int(part) for part in installed.split(".")[:3])
+        try:
+            installed = tuple(int(part) for part in installed.split(".")[:3])
+        except ValueError: # something is odd -- dev version, or ??
+            return False
         if installed < required:
             return False
         else:
             return True
 
-    libs = [('gridded', '0.5.4', ''),
-            ('nucos', '3.1.1', ''),
-            ('py_gd', '2.1.0', ''),
-            ('adios_db', '1.0.3', 'Only required to use the ADIOS Database '
+    libs = [('gridded', '0.7.2', ''),
+            ('nucos', '3.4.0', ''),
+            ('py_gd', '2.3.0', ''),
+            ('adios_db', '1.2.5', 'Only required to use the ADIOS Database '
                                   'JSON format for oil data.')
             ]
 
@@ -68,7 +88,6 @@ def check_dependency_versions():
                    "needs to be installed: {}".format(name, version, note))
             warnings.warn(msg)
         else:
-            ver = tuple(module.__version__.split(".")[:3])
             if not ver_check(version, module.__version__):
                 msg = ('Version {0} of {1} package is required, '
                        'but actual version in module is {2}:'
@@ -126,18 +145,29 @@ def initialize_console_log(level='debug'):
                         )
 
 
-def _valid_units(unit_name):
-    # fixme: I think there is something built in to nucos for this
-    #        or there should be
-    'convenience function to get all valid units accepted by nucos'
-    _valid_units = list(uc.GetUnitNames(unit_name))
-    _valid_units.extend(chain(*[val[1] for val in
-                                uc.ConvertDataUnits[unit_name].values()]))
-    return tuple(_valid_units)
+def _valid_units(unit_type):
+    """
+    return all the units for a given unit type
+
+    :param unit_type: unit type, e.g. "Mass" or "Temperature"
+    :type unit_type: str
+
+    NOTE: this is just a wrapper for nucos.get_supported_names
+    """
+    ## fixme: why is this in the gnome module __init__"
+    ##        but maybe we should jsut call nucos directly anyway.
+    return nucos.get_supported_names(unit_type)
+    # 'convenience function to get all valid units accepted by nucos'
+    # _valid_units = list(uc.GetUnitNames(unit_type))
+    # _valid_units.extend(chain(*[val[1] for val in
+    #                             uc.ConvertDataUnits[unit_type].values()]))
+    # return tuple(_valid_units)
 
 
 # we have a sort of chicken-egg situation here.  The above functions need
 # to be defined before we can import these modules.
+# FIXME: they should be defined in a utilities module or something
+# to avoid this
 check_dependency_versions()
 
 from . import (environment,

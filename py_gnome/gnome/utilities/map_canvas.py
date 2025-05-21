@@ -11,12 +11,12 @@ Also used for making raster maps.
 This should have the basic drawing stuff. Ideally nothing in here is
 GNOME-specific.
 """
-
 import bisect
 
 import numpy as np
 
 import py_gd
+import py_gd.color_ramp
 
 import nucos as uc
 
@@ -196,11 +196,36 @@ class MapCanvas(object):
         """
         Add a list of colors to the pallette
 
-        :param color_list: list of colors. Each element of the list is a 2-tuple:
-                           ('color_name', (r,g,b))
+        :param color_list: list of colors. Each element of the list
+                           is a 2-tuple: ('color_name', (r,g,b))
         """
         self.fore_image.add_colors(color_list)
         self.back_image.add_colors(color_list)
+
+    def add_color_ramp(self, color_scheme, min_val, max_val):
+        """
+        generate depth colors to the gd images
+
+        :param color_scheme: color scheme to render images
+        :type color_scheme: ("magma", "inferno", "plasma", "viridis", "cividis",
+                            "twilight", "twilight_shifted", "turbo")
+
+        :param min_val: value to map to the first color in the scheme
+
+        :param max_val: value to map to the last color in the scheme
+        """
+        existing_colors = self.fore_image.get_color_names()
+
+        # print(existing_colors)
+
+        cr = py_gd.color_ramp.ColorRamp(color_scheme,
+                                        min_val, max_val,
+                                        base_colorscheme=len(existing_colors))
+
+        self.fore_image.add_colors(cr.colorlist)
+        self.back_image.add_colors(cr.colorlist)
+
+        self._color_ramp = cr
 
     def get_color_names(self):
         """
@@ -420,6 +445,9 @@ class MapCanvas(object):
 
         This copies the foreground image on top of the
         background image and saves the whole thing.
+
+        Fixme: filename & file_type appear to not be used at all here.
+               Are we passing them in to satisfy some api specification?
 
         :param filename: full path of file to be saved to
         :type filename: string

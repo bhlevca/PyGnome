@@ -5,4 +5,6 @@ save_model
 OilLibrary.db
 Test_images2
 output_dir/
-
+.coverage*
+htmlcov/
+MapBounds_Island_anim.gif

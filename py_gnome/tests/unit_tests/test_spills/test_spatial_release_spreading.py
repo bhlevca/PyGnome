@@ -11,7 +11,6 @@ import numpy as np
 import shapely
 import pytest
 import zipfile
-import shapefile
 
 from gnome.utilities.geometry import geo_routines
 from gnome.spills.release import (PolygonRelease, NESDISRelease)
@@ -178,7 +177,7 @@ class TestPointLineRelease:
         model.environment += [constant_wind(1, 0), Water(temperature = 30.+273.15), Waves()]   
         
     # step 2 ---- add a spill object
-        spill = gs.surface_point_line_spill(num_elements=1000,
+        spill = gs.point_line_spill(num_elements=1000,
                                             start_position=(0.0, 0.0, 0.0),
                                             release_time=datetime.datetime(2000, 1, 1, 1),
                                             amount=amount,
@@ -200,4 +199,3 @@ class TestPointLineRelease:
         
     # step 6 ---- setup model run        
         model.full_run()
-        

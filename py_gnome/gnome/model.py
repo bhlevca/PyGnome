@@ -46,7 +46,7 @@ from colander import (SchemaNode,
                       String, Float, Int, Bool, List,
                       drop, OneOf)
 
-from gnome.utilities.time_utils import round_time, asdatetime
+from gnome.utilities.time_utils import round_time, asdatetime, TZOffset, TZOffsetSchema
 import gnome.utilities.rand
 from gnome.utilities.cache import ElementCache
 from gnome.utilities.orderedcollection import OrderedCollection
@@ -96,7 +96,7 @@ from gnome.concentration.concentration_location import ConcentrationLocation, Co
 class ModelSchema(ObjTypeSchema):
     'Colander schema for Model object'
     time_step = SchemaNode(Float())
-    weathering_substeps = SchemaNode(Int())
+    weathering_substeps = SchemaNode(Int(), read_only=True)
     start_time = SchemaNode(
         extend_colander.LocalDateTime(),
         validator=validators.convertible_to_seconds
@@ -158,6 +158,9 @@ class ModelSchema(ObjTypeSchema):
     #manual_weathering = SchemaNode(Bool(), save=False, update=True, test_equal=False, missing=drop)
     weathering_activated = SchemaNode(Bool(), save=True, update=True, test_equal=False, missing=drop)
 
+    run_backwards = SchemaNode(Bool())
+
+    timezone_offset = TZOffsetSchema(missing=drop)
 
 class Model(GnomeId):
     '''
@@ -176,7 +179,7 @@ class Model(GnomeId):
         Load a model instance from a save file
 
         :param filename: the filename of the save file -- usually a zip file,
-                         but can also be a directry with the full contents of
+                         but can also be a directory with the full contents of
                          a zip file
 
         :return: a model instance all set up from the savefile.
@@ -215,6 +218,8 @@ class Model(GnomeId):
                  uncertain_spills=[],
                  #manual_weathering=False,
                  weathering_activated=False,
+                 run_backwards=False,
+                 timezone_offset=TZOffset(),
                  **kwargs):
         '''
         Initializes a model.
@@ -233,10 +238,15 @@ class Model(GnomeId):
 
         :param weathering_substeps=1: How many weathering substeps to
                                           run inside a single model time step.
+                                          NOTE: using a value other than 1 has not been well tested.
 
-        :param map=gnome.map.GnomeMap(): The land-water map.
+        :param map=gnome.map.GnomeMap(): The land-water map, defaults to all water map.
 
-        :param uncertain=False: Flag for setting uncertainty.
+        :param uncertain=False: Flag for turning on uncertainty.
+
+        :param run_backwards=False: Flag for running backwards.
+
+        :param timezone_offset: Time zone the model is in.
 
         :param cache_enabled=False: Flag for setting whether the model should
                                     cache results to disk.
@@ -275,6 +285,21 @@ class Model(GnomeId):
         self.concentration = concentration
 
         self._duration = duration
+
+        self.timezone_offset=timezone_offset
+
+        if weathering_substeps != 1:
+            if weathering_substeps > 1:
+                msg = ('Setting weathering_subteps > 1 has not been well tested. '
+                       'Use at your own risk: weathering_substeps = {0}'
+                       .format(weathering_substeps))
+                #self.logger.warning(msg)
+                warnings.warn('warning: ' + msg)
+            else:
+                raise ValueError('Weathering_substeps = {} is invalid, '
+                                 'should be >= 1'
+                                 .format(weathering_substeps))
+
         self.weathering_substeps = weathering_substeps
 
         if not map:
@@ -297,6 +322,15 @@ class Model(GnomeId):
         if time_step is not None:
             self.time_step = time_step  # this calls rewind() !
         self._reset_num_time_steps()
+
+        # for backwards run set duration and time_step to be negative
+        self._run_backwards = run_backwards
+        if self._run_backwards is True:
+            if self.duration.total_seconds() > 0:
+                self._duration = timedelta(seconds = -self._duration.total_seconds())
+            if self.time_step is not None and self.time_step > 0:
+                self.time_step = -self.time_step
+
 
         # default is to zip save file
         self.zipsave = True
@@ -332,16 +366,16 @@ class Model(GnomeId):
         """
         Add the weatherers
 
-        :param which='standard': which weatheres to add. Default is 'standard',
-                                 which will add all the standard weathering algorithms
-                                 if you don't want them all, you can specify a list:
+        :param which='standard': which weatherers to add. Default is 'standard',
+                                 which will add all the standard weathering algorithms.
+                                 If you don't want them all, you can specify a list:
                                  ['evaporation', 'dispersion'].
 
                                  Options are:
                                   - 'evaporation'
                                   - 'dispersion'
                                   - 'emulsification'
-                                  - 'dissolution': Dissolution,
+                                  - 'dissolution'
                                   - 'half_life_weatherer'
 
                                  see: ``gnome.weatherers.__init__.py`` for the full list
@@ -361,10 +395,6 @@ class Model(GnomeId):
                                  "The options are:"
                                  " {}".format(wx_name,
                                               list(weatherers_by_name.keys())))
-
-
-
-
 
     def reset(self, **kwargs):
         '''
@@ -497,6 +527,33 @@ class Model(GnomeId):
         return self.spills.to_dict().get('uncertain_spills', [])
 
     @property
+    def run_backwards(self):
+        '''
+        Run backwards attribute of the model. If flag is toggled, rewind model
+        '''
+        return self._run_backwards
+
+    @run_backwards.setter
+    def run_backwards(self, run_backwards):
+        '''
+        Run backwards attribute of the model
+        if gets toggled change sign of time and duration
+        '''
+        if self._run_backwards != run_backwards:
+            self._run_backwards = run_backwards  # update run_backwards
+            if self._run_backwards is True:
+                if self.duration.total_seconds() > 0:
+                    self._duration = timedelta(seconds = -self._duration.total_seconds())
+                if self.time_step is not None and self.time_step > 0:
+                    self.time_step = -self.time_step
+            else:
+                if self.duration.total_seconds() < 0:
+                    self._duration = timedelta(seconds = abs(self._duration.total_seconds()))
+                if self.time_step is not None and self.time_step < 0:
+                    self.time_step = abs(self.time_step)
+            self.rewind()
+
+    @property
     def cache_enabled(self):
         '''
         If True, then generated data is cached
@@ -517,6 +574,10 @@ class Model(GnomeId):
                  any([w.speed_uncertainty_scale > 0.0
                      for w in self.environment
                      if isinstance(w, Wind)])))
+
+    @property
+    def has_weathering(self):
+        return any([w.on for w in self.weatherers])
 
     @property
     def start_time(self):
@@ -752,24 +813,25 @@ class Model(GnomeId):
     def setup_model_run(self):
         '''
         Runs the setup procedure preceding a model run. When complete, the
-        model should be ready to run to completion without additional prep
+        model should be ready to run to completion without additional prep.
         Currently this function consists of the following operations:
 
         1. Set up special objects.
-            Some weatherers currently require other weatherers to exist. This
-            step satisfies those requirements
+           Some weatherers currently require other weatherers to exist. This
+           step satisfies those requirements
         2. Remake collections in case ordering constraints apply (weatherers)
-        3. Compile array_types and run setup procedure on spills
-            array_types defines what data arrays are required by the various
-            components of the model
+        3. Compile array_types and run setup procedure on spills -
+           array_types defines what data arrays are required by the various
+           components of the model
         4. Attach default references
         5. Call prepare_for_model_run on all relevant objects
         6. Conduct miscellaneous prep items. See section in code for details.
         '''
 
-        '''Step 1: Set up special objects'''
+        # Step 1: Set up special objects
         weather_data = dict()
 
+        # FIXME: this should not be handled explicitly by the model
         spread = None
         langmuir = None
         for item in self.weatherers:
@@ -780,14 +842,16 @@ class Model(GnomeId):
                 if item._ref_as == 'spreading':
                     item.on = False
                     spread = item
+                # langmuir should be called from spreading -- not on its own.
                 if item._ref_as == 'langmuir':
                     item.on = False
                     langmuir = item
             except AttributeError:
                 pass
 
-# if a weatherer is using 'area' array, make sure it is being set.
+        # if a weatherer is using 'area' array, make sure it is being set.
         # Objects that set 'area' are referenced as 'spreading'
+        # fixme: another detail that should not be handles here!
         if 'area' in weather_data:
             if spread is None:
                 self.weatherers += FayGravityViscous()
@@ -801,20 +865,21 @@ class Model(GnomeId):
                 # turn langmuir back on
                 langmuir.on = True
 
-        '''Step 2: Remake and reorganize collections'''
+        # Step 2: Remake and reorganize collections
         for oc in [self.movers, self.weatherers,
                    self.outputters, self.environment]:
             oc.remake()
         self._order_weatherers()
 
-        '''Step 3: Compile array_types and run setup on spills'''
+        # Step 3: Compile array_types and run setup on spills
         array_types = dict()
-        #setup basic array types. non_weathering is subset of weathering
+
+        # setup basic array types. non_weathering is subset of weathering
         array_types.update(non_weathering_array_types)
         for sp in self.spills:
             if sp.substance and sp.substance.is_weatherable:
                 array_types.update(weathering_array_types)
-        #Go through all subcomponents to see what array types they need
+        # Go through all subcomponents to see what array types they need
         for oc in [self.movers,
                    self.outputters,
                    self.environment,
@@ -824,22 +889,28 @@ class Model(GnomeId):
                 if (hasattr(item, 'array_types')):
                     array_types.update(item.all_array_types)
 
-        #self.logger.debug(array_types)
+        # self.logger.debug(array_types)
 
         for sc in self.spills.items():
             sc.prepare_for_model_run(array_types, self.time_step)
 
-        '''Step 4: Attach default references'''
+        # Step 4: Attach default references
         ref_dict = {}
         self._attach_default_refs(ref_dict)
 
-        '''Step 5: Setup mass balance'''
+        # Step 5: Setup mass balance
+        # fixme: why is this here -- it has some of the keys required for
+        #        weathering, but not all ???
+        #        we should create the whole thing in one place, or have the parts
+        #        that need it create it.
         for sc in self.spills.items():
-            for key in ('avg_density', 'floating', 'amount_released', 'non_weathering',
-                        'avg_viscosity'):
-                sc.mass_balance[key] = 0.0
+            sc.mass_balance.update({key: 0.0 for key in ('avg_density',
+                                                         'floating',
+                                                         'amount_released',
+                                                         'non_weathering',
+                                                         'avg_viscosity')})
 
-        '''Step 6: Call prepare_for_model_run and misc setup'''
+        # Step 6: Call prepare_for_model_run and misc setup
         transport = False
         for mover in self.movers:
             if mover.on:
@@ -851,7 +922,7 @@ class Model(GnomeId):
             for sc in self.spills.items():
                 # weatherers will initialize 'mass_balance' key/values
                 # to 0.0
-                if w.on:
+                if w.on and not sc.uncertain:
                     w.prepare_for_model_run(sc)
                     weathering = True
 
@@ -879,7 +950,9 @@ class Model(GnomeId):
                                             cache=self._cache,
                                             uncertain=self.uncertain,
                                             spills=self.spills,
-                                            model_time_step=self.time_step)
+                                            model_time_step=self.time_step,
+                                            map=self.map,
+                                            model_name=self.name)
         self.logger.debug("{0._pid} setup_model_run complete for: "
                           "{0.name}".format(self))
 
@@ -912,7 +985,8 @@ class Model(GnomeId):
         for w in self.weatherers:
             for sc in self.spills.items():
                 # maybe we will setup a super-sampling step here???
-                w.prepare_for_model_step(sc, self.time_step, self.model_time)
+                if not sc.uncertain:
+                    w.prepare_for_model_step(sc, self.time_step, self.model_time)
 
         for environment in self.environment:
             environment.prepare_for_model_step(self.model_time)
@@ -923,7 +997,7 @@ class Model(GnomeId):
     def move_elements(self):
         '''
         Moves elements:
-         - loops through all the movers. and moves the elements
+         - loops through all the movers and moves the elements
          - sets new_position array for each spill
          - calls the beaching code to beach the elements that need beaching.
          - sets the new position
@@ -982,7 +1056,6 @@ class Model(GnomeId):
                     nw_mask = sc['spill_num'] == i
                     sc['fate_status'][nw_mask] = fate.non_weather
 
-
     def weather_elements(self):
         '''
         Weathers elements:
@@ -1003,18 +1076,23 @@ class Model(GnomeId):
             # if no weatherers then mass_components array may not be defined
             return
 
+        if self._time_step < 0:
+            # if backward run, don't try to weather
+            return
+
         for sc in self.spills.items():
             # elements may have beached to update fate_status
 
             sc.reset_fate_dataview()
 
-            for w in self.weatherers:
-                for model_time, time_step in self._split_into_substeps():
-                    # change 'mass_components' in weatherer
-                    w.weather_elements(sc, time_step, model_time)
-                    #self.logger.info('density after {0}: {1}'.format(w.name, sc['density'][-5:]))
+            if not sc.uncertain:
+                for w in self.weatherers:
+                    for model_time, time_step in self._split_into_substeps():
+                        # change 'mass_components' in weatherer
+                        w.weather_elements(sc, time_step, model_time)
+                        # self.logger.info('density after {0}: {1}'.format(w.name, sc['density'][-5:]))
 
-        #self.logger.info('density after weather_elements: {0}'.format(sc['density'][-5:]))
+        # self.logger.info('density after weather_elements: {0}'.format(sc['density'][-5:]))
 
     def _split_into_substeps(self):
         '''
@@ -1045,12 +1123,11 @@ class Model(GnomeId):
         '''
         Loop through movers and weatherers and call model_step_is_done
 
-        Remove elements that marked for removal
+        Remove elements that are marked for removal
 
         Output data
         '''
-
-        #run ops and aggregation step for mass_balance
+        # run ops and aggregation step for mass_balance
         env = self.compile_env()
         for sc in self.spills.items():
             recalc_density(sc, env['water'])
@@ -1069,22 +1146,22 @@ class Model(GnomeId):
             outputter.model_step_is_done()
 
         for sc in self.spills.items():
-            '''
-            removes elements with oil_status.to_be_removed
-            '''
+            # removes elements with oil_status.to_be_removed
             sc.model_step_is_done()
-
             # age remaining particles
-            sc['age'][:] = sc['age'][:] + self.time_step
+            # fixme: why not sc['age'] += self.time_step
+            # let time increase also for backwards run
+            sc['age'][:] = sc['age'][:] + abs(self.time_step)
 
     def write_output(self, valid, messages=None):
-        output_info = {'step_num': self.current_time_step}
+        output_info = {'step_num': self.current_time_step,
+                       'step_time': self.model_time.isoformat(timespec='minutes')}
 
         for outputter in self.outputters:
             #set the concentration location
             outputter.VolumetricConcentrationPOI = self.concentration
             if self.current_time_step == self.num_time_steps - 1:
-                output = outputter.write_output(self.current_time_step, True)
+                output = outputter.write_output(self.current_time_step, islast_step=True)
             else:
                 output = outputter.write_output(self.current_time_step)
 
@@ -1099,10 +1176,8 @@ class Model(GnomeId):
 
     def step(self):
         '''
-        Steps the model forward in time.
+        Steps the model forward in time (or backward if run_backwards = True).
 
-        NOTE: in theory, it could also go backward with a negative time step,
-        for hindcasting, but that has not been tested.
         '''
         isValid = True
         for sc in self.spills.items():
@@ -1144,22 +1219,31 @@ class Model(GnomeId):
             raise StopIteration("Run complete for {0}".format(self.name))
 
         else:
-            # release half the LEs for this time interval
-            half_step = timedelta(seconds=self.time_step / 2)
-            self.release_elements(self.model_time,
-                                  self.model_time + half_step)
-            self.setup_time_step()
-            self.move_elements()
-            self.weather_elements()
-            self.step_is_done()
-            self.current_time_step += 1
-            for sc in self.spills.items():
-                sc.current_time_stamp = self.model_time
-            # Release the remaining half of the LEs in this time interval
-            self.release_elements(self.model_time - half_step,
-                                  self.model_time)
-            output_info = self.output_step(isValid)
-            return output_info
+            # catch mid run errors so outputters can still write files
+            try:
+                # release half the LEs for this time interval
+                half_step = timedelta(seconds=self.time_step / 2)
+                self.release_elements(self.model_time,
+                                      self.model_time + half_step)
+                self.setup_time_step()
+                self.move_elements()
+                self.weather_elements()
+                self.step_is_done()
+                self.current_time_step += 1
+                for sc in self.spills.items():
+                    sc.current_time_stamp = self.model_time
+                # Release the remaining half of the LEs in this time interval
+                self.release_elements(self.model_time - half_step,
+                                      self.model_time)
+                output_info = self.output_step(isValid)
+                return output_info
+            except Exception as ex:
+                self.post_model_run()
+                # might only want to write files for out of time errors
+                #if "not within the bounds" in str(ex):
+                    #self.post_model_run()
+                    #raise GnomeRuntimeError(str(ex))
+                raise
 
     def output_step(self, isvalid):
         self._cache.save_timestep(self.current_time_step, self.spills)
@@ -1269,6 +1353,11 @@ class Model(GnomeId):
         todo: maybe we don't want to do this - revisit this requirement
         JAH 9/22/2021: We sort of need this now because a lot of script behavior expects
         it. A lamentable state of affairs indeed.
+
+        CHB: maybe this could be more standardized though
+             -- pity to have hard coded what all the possible environment types are.
+
+             perhaps all objects could have a "need_env_objects" attribute?
         '''
         if hasattr(obj_added, 'wind') and obj_added.wind is not None:
             if obj_added.wind not in self.environment:
@@ -1372,9 +1461,10 @@ class Model(GnomeId):
         save the model state in saveloc. If self.zipsave is True, then a
         zip archive is created and model files are saved to the archive.
 
-        :param saveloc=".": a directory or filename. If a directory, then either
+        :param saveloc: a directory or filename. If a directory, then either
                         the model is saved into that dir, or a zip archive is
                         created in that dir (with a .gnome extension).
+                        Defaults to ".".
 
                         The file(s) are clobbered when save() is called.
         :type saveloc: A dir or file name (relative or full path) as a string.
@@ -1452,7 +1542,7 @@ class Model(GnomeId):
 
         :param filename: If saveloc is an open zipfile or folder,
                          this indicates the name of the file to be loaded.
-                         If saveloc is a filename, is parameter is ignored.
+                         If saveloc is a filename, this parameter is ignored.
 
         :param refs: A dictionary of id -> object instances that will be used
                      to complete references, if available.
@@ -1561,17 +1651,16 @@ class Model(GnomeId):
 
     def check_inputs(self):
         '''
-        check the user inputs before running the model
-        raise an exception if user can't run the model
+        check the user inputs before running the model and
+        raise an exception if the user can't run the model
 
-        todo: check if all spills start after model ends
-
-        fixme: This should probably be broken out into its
+        fixme: This should probably be broken out into its \
                own module, class, something -- with each test independent.
         '''
         (msgs, isValid) = self.validate()
 
         someSpillIntersectsModel = False
+        isWeatherable = False
         num_spills = len(self.spills)
         if num_spills == 0:
             msg = '{0} contains no spills'.format(self.name)
@@ -1626,26 +1715,43 @@ class Model(GnomeId):
 
                         msgs.append(self._warn_pre + msg)
 
-                if spill.release_time < self.start_time + self.duration:
-                    someSpillIntersectsModel = True
 
-                if spill.release_time > self.start_time:
+
+                if not self.run_backwards:
+                    if spill.release_time < self.start_time + self.duration:
+                        someSpillIntersectsModel = True
+                else:
+                    if spill.release_time > self.start_time + self.duration:
+                        someSpillIntersectsModel = True
+
+                if ((spill.release_time > self.start_time and self.time_step > 0)
+                      or (spill.release_time < self.start_time and self.time_step < 0)):
                     msg = ('{0} has release time after model start time'.
                            format(spill.name))
                     self.logger.warning(msg)
 
                     msgs.append(self._warn_pre + msg)
 
-                elif spill.release_time < self.start_time:
-                    msg = ('{0} has release time before model start time'
-                           .format(spill.name))
+                elif ((spill.release_time < self.start_time and self.time_step > 0)
+                      or (spill.release_time > self.start_time and self.time_step < 0)):
+                    msg = ('{0} has release time before model start time: rt = {1}, st = {2}'
+                           .format(spill.name, spill.release_time, self.start_time))
                     self.logger.error(msg)
 
                     msgs.append('error: {}: {}'
                                 .format(self.__class__.__name__, msg))
                     isValid = False
 
+                # note this is never triggered because end_rt < start_rt causes error on init
+                if (spill.release_time != spill.end_release_time) and self.time_step < 0:
+                    msg = ('Backwards run is not valid for continuous releases. '
+                       'Use an instantaneous release or run forwards.')
+                    isValid = False
+                    raise GnomeRuntimeError(msg)
+
+
                 if spill.substance.is_weatherable:
+                    isWeatherable = True
                     pour_point = spill.substance.pour_point
 
                     if spill.substance.water is not None:
@@ -1699,12 +1805,35 @@ class Model(GnomeId):
                         .format(mover.name))
                 self.logger.warning(msg)  # for now make this a warning
                 msgs.append('warning: ' + self.__class__.__name__ + ': ' + msg)
+                warnings.warn('warning: ' + msg)
+
+        # check if backwards run has weathering on
+        if self.time_step < 0:
+            if self.duration.total_seconds() > 0:
+                msg = ('Time step and duration must have the same sign: time step = {0} duration = {1} '
+                       'To run backwards they must both be negative.'
+                        .format(self.time_step,self.duration.total_seconds()))
+                isValid = False
+                raise GnomeRuntimeError(msg)
+            if self.duration.total_seconds() > 0:
+                msg = ('Time step and duration must have the same sign: time step = {0} duration = {1} '
+                       'To run backwards they must both be negative.'
+                        .format(self.time_step,self.duration.total_seconds()))
+                isValid = False
+            if self.has_weathering and isWeatherable:
+            #if self.weathering_activated: # might have a better check for weathering
+                msg = ('Backwards run is not valid for weathering. '
+                       'Turn off weathering to model a backwards trajectory.')
+                isValid = False
+                raise GnomeRuntimeError(msg)
+
 
         return (msgs, isValid)
 
     def validate(self):
         '''
         invoke validate for all gnome objects contained in model
+
         todo: should also check wind, water, waves are defined if weatherers
         are defined
         '''
@@ -1792,14 +1921,25 @@ class Model(GnomeId):
 
         return list(self.spills.items())[0].data_arrays.keys()
 
-    def get_spill_property(self, prop_name, ucert=0):
-        '''
+    def get_spill_property(self, prop_name, ucert=False):
+        """
         Convenience method to allow user to look up properties of a spill.
-        User can specify ucert as 'ucert' or 1
-        :return: list
-        '''
-        ucert = 1 if ucert == 'ucert' else 0
-        return list(self.spills.items())[ucert][prop_name]
+
+        :param prop_name: name of property: use `model.list_properties()` to see all the options.
+        :type prop_name: str
+
+        :param ucert: whether to get it from the uncertainty spill
+        :type ucert: bool
+
+        :returns: np.array
+        """
+        ucert = 1 if ucert else 0
+        try:
+            return self.spills.items()[ucert][prop_name]
+        except KeyError:
+            raise ValueError(f"'{prop_name}' doesn't exist. Options are:"
+                             f"{self.list_spill_properties()}")
+
 
     def get_spill_data(self, target_properties, conditions, ucert=0):
         """

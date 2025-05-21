@@ -26,17 +26,15 @@ from gnome.utilities.timeseries import Timeseries
 from gnome.utilities.inf_datetime import InfDateTime
 from gnome.utilities.distributions import RayleighDistribution as rayleigh
 
-from gnome.persist import (SchemaNode, drop, OneOf, Float, String, Range,
-                           Boolean, DefaultTupleSchema, LocalDateTime,
-                           DatetimeValue2dArraySchema, FilenameSchema,
-                           validators, base_schema)
-from gnome.utilities.convert import (to_time_value_pair,
-                                     tsformat,
-                                     to_datetime_value_2d)
+from gnome.persist import (SchemaNode, drop, OneOf, Float, String, Range, Boolean,
+                           DefaultTupleSchema, LocalDateTime, DatetimeValue2dArraySchema,
+                           FilenameSchema, validators, base_schema)
+from gnome.utilities.convert import (to_time_value_pair, tsformat, to_datetime_value_2d)
 from gnome.persist.validators import convertible_to_seconds
 
 from .environment import Environment
 from gnome.environment.gridded_objects_base import Time, TimeSchema
+from gnome.utilities.time_utils import TZOffset, TZOffsetSchema
 from .. import _valid_units
 
 
@@ -45,19 +43,17 @@ class MagnitudeDirectionTuple(DefaultTupleSchema):
                        default=0,
                        validator=Range(min=0,
                                        min_err='wind speed must be '
-                                               'greater than or equal to 0'
-                                       )
-                       )
-    direction = SchemaNode(Float(), default=0,
-                           validator=Range(0, 360,
+                                       'greater than or equal to 0'))
+    direction = SchemaNode(Float(),
+                           default=0,
+                           validator=Range(0,
+                                           360,
                                            min_err='wind direction must be '
-                                                   'greater than or equal to '
-                                                   '0',
+                                           'greater than or equal to '
+                                           '0',
                                            max_err='wind direction must be '
-                                                   'less than or equal to '
-                                                   '360deg'
-                                           )
-                           )
+                                           'less than or equal to '
+                                           '360deg'))
 
 
 class WindTupleSchema(DefaultTupleSchema):
@@ -93,18 +89,20 @@ class WindSchema(base_schema.ObjTypeSchema):
     description = SchemaNode(String())
 
     # Thanks to CyTimeseries
-    filename = FilenameSchema(save=False, missing=drop, isdatafile=False, update=False, test_equal=False)
+    filename = FilenameSchema(save=False,
+                              missing=drop,
+                              isdatafile=False,
+                              update=False,
+                              test_equal=False)
 
     updated_at = SchemaNode(LocalDateTime())
     latitude = SchemaNode(Float())
     longitude = SchemaNode(Float())
     source_id = SchemaNode(String())
-    source_type = SchemaNode(
-        String(),
-        validator=OneOf(wind_datasources.__members__.keys()),
-        default='undefined',
-        missing='undefined'
-    )
+    source_type = SchemaNode(String(),
+                             validator=OneOf(wind_datasources.__members__.keys()),
+                             default='undefined',
+                             missing='undefined')
     units = SchemaNode(String(), default='m/s')
     speed_uncertainty_scale = SchemaNode(Float())
 
@@ -112,21 +110,24 @@ class WindSchema(base_schema.ObjTypeSchema):
     timeseries = WindTimeSeriesSchema(test_equal=False)
 
     extrapolation_is_allowed = SchemaNode(Boolean())
-    data_start = SchemaNode(LocalDateTime(), read_only=True,
-                            validator=convertible_to_seconds)
-    data_stop = SchemaNode(LocalDateTime(), read_only=True,
-                           validator=convertible_to_seconds)
+    data_start = SchemaNode(LocalDateTime(), read_only=True, validator=convertible_to_seconds)
+    data_stop = SchemaNode(LocalDateTime(), read_only=True, validator=convertible_to_seconds)
     time = TimeSchema(
         #this is only for duck-typing the new-style environment objects,
         #so only provide to the client
-        save=False, update=False, save_reference=False, read_only=True,
+        save=False,
+        update=False,
+        save_reference=False,
+        read_only=True,
     )
+    timezone_offset = TZOffsetSchema()
 
 
 class Wind(Timeseries, Environment):
-    ## fixme: rename as "PointWind"
+    ## fixme: rename as "PointWind" or "UniformWind"? -- there is an alias already
+    ## One day we will need to decide if the name change / class refactor is worth the effort!
     '''
-    Provides the a "point wind" -- uniform wind over all space
+    Provides a "point wind" -- uniform wind over all space
     '''
     # object is referenced by others using this attribute name
     _ref_as = 'wind'
@@ -146,22 +147,35 @@ class Wind(Timeseries, Environment):
                  longitude=None,
                  speed_uncertainty_scale=0.0,
                  extrapolation_is_allowed=False,
+                 timezone_offset=None,
                  **kwargs):
         """
-        Create a PointWind object, representing a time series of wind at a single value
+        Create a uniform Wind object, representing a time series of wind at a single
+        location, applied over all space.
+
+        If ``filename`` is specified, then the data will be read from a file.
+        otherwise, all the other attributes must be set.
 
         :param timeseries=None:
+
         :param units=None:
+
         :param filename=None:
+
         :param coord_sys='r-theta':
+
         :param latitude=None:
+
         :param longitude=None:
+
         :param speed_uncertainty_scale=0.0:
+
         :param extrapolation_is_allowed=False:
 
-
+        :param timezone_offset:
         """
-        self._timeseries = np.array([(sec_to_date(zero_time()), [0.0, 0.0])], dtype=datetime_value_2d)
+        self._timeseries = np.array([(sec_to_date(zero_time()), [0.0, 0.0])],
+                                    dtype=datetime_value_2d)
         self.updated_at = kwargs.pop('updated_at', None)
         self.source_id = kwargs.pop('source_id', 'undefined')
 
@@ -176,25 +190,43 @@ class Wind(Timeseries, Environment):
         #       just pass it into the base __init__() function.
         #       As it is, we are losing arguments that we then need to
         #       explicitly handle.
-        if filename is not None:
+        if filename is not None:  # load from file
+            # fixme: what is this? is it ever used?
             self.source_type = kwargs.pop('source_type', 'file')
 
-            super(Wind, self).__init__(filename=filename, coord_sys=coord_sys, **kwargs)
+            # create this as an empty default object
+            super(Wind, self).__init__(**kwargs)
 
-            self.name = kwargs.pop('name', os.path.split(self.filename)[1])
-            # set _user_units attribute to match user_units read from file.
-            self._user_units = self.ossm.user_units
-            self._timeseries = self.get_wind_data(units=self._user_units)
+            # Assume it's an OSSM file
+            name, coords, units, timezone_offset, timezone_name, times, speeds, directions = \
+                    read_ossm_format(filename)
 
-            if units is not None:
-                self.units = units
+            # create the timeseries
+            wind_vel = np.zeros((len(times), ), dtype=datetime_value_2d)
+            for i, record in enumerate(zip(times, speeds, directions)):
+                wind_vel['time'][i] = record[0]
+                wind_vel['value'][i] = tuple(record[1:3])
+
+            self.units = units
+            #self.new_set_timeseries(wind_vel, coord_sys='uv')
+            self.new_set_timeseries(wind_vel, coord_sys=coord_sys)
+
+            if coords != (None, None):
+                self.longitude = coords[1]
+                self.latitude = coords[0]
+
+            self.name = kwargs.pop('name', name)
+            self.units = units
+            self._filename = filename
+
+            self.timezone_offset = TZOffset(timezone_offset, timezone_name)
+
         else:
             if kwargs.get('source_type') in wind_datasources.__members__.keys():
                 self.source_type = kwargs.pop('source_type')
             else:
                 self.source_type = 'undefined'
 
-            # either timeseries is given or nothing is given
             # create an empty default object
             super(Wind, self).__init__(coord_sys=coord_sys, **kwargs)
 
@@ -206,7 +238,61 @@ class Wind(Timeseries, Environment):
                 self.units = units
                 self.new_set_timeseries(timeseries, coord_sys)
 
+            self.timezone_offset = timezone_offset
+
         self.extrapolation_is_allowed = extrapolation_is_allowed
+
+    @classmethod
+    def from_file(cls, filename, format=None):
+        """
+        create an object from a file.
+
+        currently only the OSSM format is supported
+
+        :param filename: Path to the data file
+        :type PathLike:
+
+        :param format: File format of data -- only 'ossm' currently supported.
+                       If None: it will attempt to auto-detect the format.
+        :type format: str
+        """
+        if format is None:
+            # auto detect code some day ...
+            format = 'ossm'
+        if format not in {'ossm'}:
+            raise ValueError(f"format: {format} not supported -- only 'ossm'")
+
+        source_type = 'file'  # need this??
+
+        # Assume it's an OSSM file
+        name, coords, units, timezone_offset, timezone_name, times, speeds, directions = \
+            read_ossm_format(filename)
+
+        # create the timeseries
+        wind_vel = np.zeros((len(times), ), dtype=datetime_value_2d)
+        for i, record in enumerate(zip(times, speeds, directions)):
+            wind_vel['time'][i] = record[0]
+            wind_vel['value'][i] = tuple(record[1:3])
+
+        wind = cls(timeseries=wind_vel,
+                   units=units,
+                   filename=None,
+                   coord_sys='r-theta',
+                   latitude=coords[1],
+                   longitude=coords[0],
+                   name=name,
+                   timezone_offset = TZOffset(timezone_offset, timezone_name)
+                   )
+            # self.units = units
+            # #self.new_set_timeseries(wind_vel, coord_sys='uv')
+            # self.new_set_timeseries(wind_vel, coord_sys=coord_sys)
+
+            # self.name = kwargs.pop('name', name)
+            # self.units = units
+        wind._filename = filename
+
+        return wind
+
 
     def update_from_dict(self, dict_, refs=None):
         if 'units' in dict_:
@@ -231,13 +317,13 @@ class Wind(Timeseries, Environment):
                 'source_type="{0.source_type}", '
                 'units="{0.units}", '
                 'updated_at="{0.updated_at}", '
-                'timeseries={1})'
-                .format(self, self_ts))
+                'timeseries={1})'.format(self, self_ts))
 
     @property
     def time(self):
         #This duck-types the API of the timeseries_objecs_base.TimeseriesVector object
-        if not hasattr(self, '_time') and hasattr(self, '_timeseries') and self._timeseries is not None:
+        if not hasattr(self, '_time') and hasattr(
+                self, '_timeseries') and self._timeseries is not None:
             self._time = Time()
             self._time.data = self._timeseries['time'].astype(datetime.datetime)
 
@@ -259,6 +345,7 @@ class Wind(Timeseries, Environment):
         else:
             raise ValueError('Object being assigned must be an iterable '
                              'or a Time object')
+
     @property
     def timeseries(self):
         '''
@@ -274,7 +361,7 @@ class Wind(Timeseries, Environment):
         self.units attribute. Property converts the units to 'm/s' so Cython/
         C++ object stores timeseries in 'm/s'
         '''
-        coord_sys ='r-theta'
+        coord_sys = 'r-theta'
         self.new_set_timeseries(value, coord_sys)
 
     def new_set_timeseries(self, value, coord_sys):
@@ -283,8 +370,7 @@ class Wind(Timeseries, Environment):
 
             wind_data = self._xform_input_timeseries(value)
             self._timeseries = wind_data.copy()
-            wind_data['value'] = self._convert_units(wind_data['value'],
-                                                     coord_sys, units,
+            wind_data['value'] = self._convert_units(wind_data['value'], coord_sys, units,
                                                      'meter per second')
 
             datetime_value_2d = self._xform_input_timeseries(wind_data)
@@ -295,7 +381,20 @@ class Wind(Timeseries, Environment):
             self.time.data = self._timeseries['time'].astype(datetime.datetime)
         else:
             raise ValueError('Bad timeseries as input')
-
+    
+    def _set_timezone_offset(self, tzo):
+        if tzo is None:
+            tzo = TZOffset(offset=None, title="No Timezone Specified")
+        if self._timezone_offset and self._timezone_offset.offset is not None:
+            if tzo.offset is not None:
+                off = int((tzo.offset - self._timezone_offset.offset) * 3600)
+                off = np.timedelta64(off, 's')
+                new_ts = np.zeros((len(self.timeseries), ), dtype=datetime_value_2d)
+                new_ts['time'] = self.timeseries['time'] + off
+                new_ts['value'] = self.timeseries['value']
+                self.new_set_timeseries(new_ts, 'r-theta')
+                
+        self._timezone_offset = tzo
 
     @property
     def data_start(self):
@@ -340,8 +439,7 @@ class Wind(Timeseries, Environment):
             data[:, 0] = uc.convert('Velocity', from_unit, to_unit, data[:, 0])
 
             if coord_sys == ts_format.uv:
-                data[:, 1] = uc.convert('Velocity', from_unit, to_unit,
-                                        data[:, 1])
+                data[:, 1] = uc.convert('Velocity', from_unit, to_unit, data[:, 1])
 
         return data
 
@@ -363,7 +461,6 @@ class Wind(Timeseries, Environment):
 #             datafile = os.path.join(saveloc, ts_name)
 #             self._write_timeseries_to_file(datafile)
 #             self._filename = datafile
-
 
     def _write_timeseries_to_zip(self, saveloc, ts_name):
         '''
@@ -408,10 +505,8 @@ class Wind(Timeseries, Environment):
                      '{0.year:04}, '
                      '{0.hour:02}, '
                      '{0.minute:02}, '
-                     '{1:02.2f}, {2:02.2f}\n'
-                     .format(idt,
-                             round(val[i, 0], 4),
-                             round(val[i, 1], 4)))
+                     '{1:02.2f}, {2:02.2f}\n'.format(idt, round(val[i, 0], 4),
+                                                     round(val[i, 1], 4)))
 
     def get_wind_data(self, datetime=None, units=None, coord_sys='r-theta'):
         """
@@ -450,10 +545,8 @@ class Wind(Timeseries, Environment):
         datetimeval = super(Wind, self).get_timeseries(datetime, coord_sys)
         units = (units, self._user_units)[units is None]
 
-        datetimeval['value'] = self._convert_units(datetimeval['value'],
-                                                   coord_sys,
-                                                   'meter per second',
-                                                   units)
+        datetimeval['value'] = self._convert_units(datetimeval['value'], coord_sys,
+                                                   'meter per second', units)
 
         return datetimeval
 
@@ -482,8 +575,7 @@ class Wind(Timeseries, Environment):
             self.units = units
 
             wind_data = self._xform_input_timeseries(wind_data)
-            wind_data['value'] = self._convert_units(wind_data['value'],
-                                                     coord_sys, units,
+            wind_data['value'] = self._convert_units(wind_data['value'], coord_sys, units,
                                                      'meter per second')
 
             super(Wind, self).set_timeseries(wind_data, coord_sys)
@@ -508,8 +600,18 @@ class Wind(Timeseries, Environment):
 
         return tuple(data[0]['value'])
 
-    def at(self, points, time, coord_sys='uv', units=None,
-           _auto_align=True):
+    def at(self,
+           points,
+           time,
+           *,
+           units=None,
+           extrapolate=None,
+           coord_sys='uv',
+           _auto_align=True,
+           **kwargs):
+        # fixme: this isn't quite aligned with the Environment base class signature.
+        # it should be:
+        # def at(self, points, time, units=None, extrapolate=False, coord_sys='uv', _auto_align=True):
         '''
         Returns the value of the wind at the specified points at the specified
         time. Valid coordinate systems include 'r-theta', 'r', 'theta',
@@ -517,42 +619,66 @@ class Wind(Timeseries, Environment):
         environment objects.
 
         :param points: Nx2 or Nx3 array of positions (lon, lat, [z]).
-                       This may not be None. To get wind values
-                       position-independently, use get_value(time)
+                       This may be None: this is a spatially independent
+                       wind - value is the same for all points.
         :param time: Datetime of the time to be queried
 
         :param coord_sys: String describing the coordinate system.
         '''
         if points is None:
-            points = np.array((0, 0)).reshape(-1, 2)
+            points = np.zeros((1, 2))
+            # points = np.array((0, 0)).reshape(-1, 2)
 
+        # we really shouldn't need this here
         pts = gridded.utilities._reorganize_spatial_data(points)
 
-        ret_data = np.zeros_like(pts, dtype='float64')
+        ret_data = np.zeros_like(pts, dtype=np.float64)
 
+        idx = None
         if coord_sys in ('r-theta', 'uv'):
-            data = self.get_wind_data(time, 'm/s', coord_sys)[0]['value']
-            ret_data[:, 0] = data[0]
-            ret_data[:, 1] = data[1]
-        elif coord_sys in ('u', 'v', 'r', 'theta'):
-            if coord_sys in ('u', 'v'):
-                f = 'uv'
-            else:
-                f = 'r-theta'
-
-            data = self.get_wind_data(time, 'm/s', f)[0]['value']
-            if coord_sys in ('u', 'r'):
-                ret_data[:, 0] = data[0]
-                ret_data = ret_data[:, 0]
-            else:
-                ret_data[:, 1] = data[1]
-                ret_data = ret_data[:, 1]
+            cs = coord_sys
+        elif coord_sys == 'u':
+            cs = 'uv'
+            idx = 0
+        elif coord_sys == 'r':
+            cs = 'r-theta'
+            idx = 0
+        elif coord_sys == 'v':
+            cs = 'uv'
+            idx = 1
+        elif coord_sys == 'theta':
+            cs = 'r-theta'
+            idx = 1
         else:
             raise ValueError('invalid coordinate system {0}'.format(coord_sys))
 
+        # since extrapolation_is_allowed is not passed into the C code we need
+        # to temporarily set it if extrapolate is passed in, and then change it back
+        original_extrapolation = self.extrapolation_is_allowed  # save value
+        if extrapolate is not None:  # passed in a value, assume this is what we want
+            self.extrapolation_is_allowed = extrapolate
+        else:  # otherwise probably set on the wind_mover
+            if self.extrapolation_is_allowed is None:  # shouldn't happen
+                self.extrapolation_is_allowed = False
+        try:
+            data = self.get_wind_data(time, 'm/s', cs)[0]['value']
+        except IndexError:
+            # CyTimeseries is raising an IndexError
+            raise ValueError(f'time specified ({time}) is not within the bounds of the time: '
+                             f'({self.data_start} to {self.data_stop})')
+        finally:  # make sure it gets restored even if there's an error
+            self.extrapolation_is_allowed = original_extrapolation  # put it back the way it was
+
+        if idx is None:
+            ret_data[:, 0] = data[0]
+            ret_data[:, 1] = data[1]
+        # extract scalar
+        else:
+            ret_data[:, idx] = data[idx]
+            ret_data = ret_data[:, idx]
+
         if _auto_align:
-            ret_data = (gridded.utilities
-                        ._align_results_to_spatial_data(ret_data, points))
+            ret_data = (gridded.utilities._align_results_to_spatial_data(ret_data, points))
 
         return ret_data
 
@@ -581,8 +707,7 @@ class Wind(Timeseries, Environment):
         if up_or_down not in ('up', 'down'):
             return False
 
-        if (self.speed_uncertainty_scale <= 0.0 or
-                self.speed_uncertainty_scale > 0.5):
+        if (self.speed_uncertainty_scale <= 0.0 or self.speed_uncertainty_scale > 0.5):
             return False
         else:
             percent_uncertainty = self.speed_uncertainty_scale
@@ -593,11 +718,9 @@ class Wind(Timeseries, Environment):
             sigma = rayleigh.sigma_from_wind(tse['value'][0])
 
             if up_or_down == 'up':
-                tse['value'][0] = rayleigh.quantile(0.5 + percent_uncertainty,
-                                                    sigma)
+                tse['value'][0] = rayleigh.quantile(0.5 + percent_uncertainty, sigma)
             elif up_or_down == 'down':
-                tse['value'][0] = rayleigh.quantile(0.5 - percent_uncertainty,
-                                                    sigma)
+                tse['value'][0] = rayleigh.quantile(0.5 - percent_uncertainty, sigma)
 
         self.set_wind_data(time_series, self.units)
 
@@ -630,20 +753,17 @@ class Wind(Timeseries, Environment):
 
         return (msgs, True)
 
-class PointWind(Wind):
-    """
-    Wind at a single point
-    """
-    # currently an alias for Wind -- but we should probably swap those and
-    # make this the real class, and the `Wind` be the alias.
-    pass
+
+# we should probably remove this, if we're not going to do it right.
+PointWind = Wind  # alias for Wind class
+
 
 def constant_wind(speed, direction, units='m/s'):
     """
     utility to create a constant wind "timeseries"
 
     :param speed: speed of wind
-    :param direction: direction -- degrees True, direction wind is from
+    :param direction: direction -- direction wind is from
                       (degrees True)
     :param unit='m/s': units for speed, as a string, i.e. "knots", "m/s",
                        "cm/s", etc.
@@ -655,21 +775,26 @@ def constant_wind(speed, direction, units='m/s'):
     wind_vel = np.zeros((1, ), dtype=datetime_value_2d)
 
     # just to have a time accurate to minutes
-    wind_vel['time'][0] = datetime.datetime.now().replace(microsecond=0,
-                                                          second=0,
-                                                          minute=0)
+    wind_vel['time'][0] = datetime.datetime.now().replace(microsecond=0, second=0, minute=0)
     wind_vel['value'][0] = (speed, direction)
 
-    return PointWind(timeseries=wind_vel, coord_sys='r-theta', units=units)
+    return Wind(timeseries=wind_vel, coord_sys='r-theta', units=units)
 
 
 def wind_from_values(values, units='m/s'):
     """
-    creates a Wind object directly from data.
+
+    Creates a `Wind` object (Point Wind) directly from data.
 
     :param values: list of (datetime, speed, direction) tuples
 
-    :returns: A Wind timeseries object that can be used for a wind mover, etc.
+    :param units: speed units - defaults to "m/s" Any speed unit defined
+                  in nucos is acceptable (e.g. knot, mph)
+
+
+    Direction is the where the wind is coming from in degrees from North
+
+    :returns: A :py:class:`gnome.environment.wind.Wind` object that can be used for a wind mover, etc.
     """
     wind_vel = np.zeros((len(values), ), dtype=datetime_value_2d)
 
@@ -678,3 +803,157 @@ def wind_from_values(values, units='m/s'):
         wind_vel['value'][i] = tuple(record[1:3])
 
     return Wind(timeseries=wind_vel, coord_sys='r-theta', units=units)
+
+cardinal_directions = {
+    "N": 0,
+    "NNE": 22.5,
+    "NE": 45,
+    "ENE": 67.5,
+    "E": 90,
+    "ESE": 112.5,
+    "SE": 135,
+    "SSE": 157.5,
+    "S": 180,
+    "SSW": 202.5,
+    "SW": 225,
+    "WSW": 247.5,
+    "W": 270,
+    "WNW": 292.5,
+    "NW": 315,
+    "NNW": 337.5
+}
+
+def read_ossm_format(filename):
+    """
+    Read any of the three OSSM formats:
+
+    3 line header
+    4 line header -- preferred
+    5 line header
+
+    :returns: Times, data, name,  timezone offset, timezone, units.
+    """
+    # read the data:
+    with open(filename, encoding='utf-8') as infile:
+        try:
+            # read the header
+            (data, line_no, name, coords, units, timezone_offset,
+             timezone_name) = _read_ossm_header(infile)
+            # read the rest of the data
+            times = [data[0]]
+            speeds = [data[1]]
+            directions = [data[2]]
+
+            for line in infile:
+                line_no += 1
+                if line.strip():
+                    data = _read_ossm_data_line(line)
+                    if data is None:
+                        raise ValueError(f"Something wrong with file. on line: {line_no}")
+                    times.append(data[0])
+                    speeds.append(data[1])
+                    directions.append(data[2])
+        except Exception as err:
+            raise ValueError(f"File is a malformed OSSM file: {err.args}") from err
+
+    return (name, coords, units, timezone_offset, timezone_name, times, speeds, directions)
+
+
+def _read_ossm_header(infile):
+    # there could be more sanity checking here
+    # for now, for the most part, if it doesn't understand what's there
+    # it ignores it.
+    line_no = 0
+    # Line 1: name
+    name = infile.readline().strip()
+    line_no += 1
+    name = str(filename) if not name else name
+
+    # line 2: location coords:
+    line = infile.readline().strip()
+    line_no += 1
+    try:
+        lat, lon = [float(i) for i in line.split(",")]
+        coords = (lon, lat)
+    except ValueError:  # somethings wrong with the line.
+        coords = (None, None)
+
+    # line 3: units
+    # should we check that validity of the units here?
+    units = infile.readline().strip()
+    line_no += 1
+    units = 'm/s' if units.lower() == 'mps' else units  # "mps" not a NUCOS unit.
+    if not units:
+        raise ValueError("Wind files must have units: "
+                         "It should be the third line of the Header")
+
+    # Is the header done?
+    line = infile.readline().strip()
+    line_no += 1
+    data = _read_ossm_data_line(line)
+    # NOTE: what if there's only a name, and no number? "PST"
+    if data is None:
+        # special case: GMT and UTC:
+        if line.lower() in {"gmt", "utc"}:
+            timezone_offset = 0
+            timezone_name = line
+        else:
+            # not done with the header: should be the timezone info
+            fields = line.split(',', maxsplit=1)
+            try:
+                timezone_offset = float(fields[0])
+            except ValueError:
+                timezone_offset = None
+            try:
+                timezone_name = fields[1].strip()
+            except IndexError:
+                timezone_name = ""
+    else:
+        # 3 line header -- no timezone info
+        timezone_offset = None
+        timezone_name = ""
+        return (data, line_no, name, coords, units, timezone_offset, timezone_name)
+    line = infile.readline().strip()
+    line_no += 1
+    data = _read_ossm_data_line(line)
+    if data is None:
+        # must be a five line file -- get the next one
+        line = infile.readline().strip()
+        line_no += 1
+        data = _read_ossm_data_line(line)
+        if data is None:
+            raise ValueError(f"Something wrong with file on line: {line_no}")
+
+    return (data, line_no, name, coords, units, timezone_offset, timezone_name)
+
+
+def _read_ossm_data_line(line):
+    """
+    Check if a line of data fits the OSSM format.
+
+    returns None if not, returns the data if it does.
+    """
+    data = line.strip().split(',')
+    # should be 7 fields
+    if len(data) != 7:
+        return None
+    # first 5 should be integers
+    try:
+        day, month, year, hour, second = [int(f) for f in data[:5]]
+    except ValueError:
+        return None
+    # last two should be floats
+    try:
+        speed, direction = [float(f) for f in data[5:]]
+    except ValueError:
+        # or might be cardinal direction
+        try:
+            speed, cardinal_direction = [float(data[5]), data[6].strip()]
+            direction = cardinal_directions[cardinal_direction]
+        except (ValueError, KeyError):
+            return None
+    # fix for two digit year:
+    if year < 100:
+        year += (2000 if year < 70 else 1900)
+    time = datetime.datetime(year, month, day, hour, second)
+    return time, speed, direction

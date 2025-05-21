@@ -6,7 +6,6 @@ tests for our extensions to colander
 Not complete at all!
 """
 
-
 import os
 from datetime import datetime
 import pprint as pp
@@ -167,9 +166,9 @@ class TestDemoObj(object):
         inst = DemoObj(filename=None, variable=tsv,
                        variables=[tsv, tsv.variables[0]])
 
-        saveloc = tempfile.mkdtemp()
-        _json_, zipfile_, _refs = inst.save(saveloc=saveloc)
-        loaded = DemoObj.load(zipfile_)
+        with tempfile.TemporaryDirectory() as saveloc:
+            _json_, zipfile_, _refs = inst.save(saveloc=saveloc)
+            loaded = DemoObj.load(zipfile_)
 
         assert inst == loaded
 
@@ -241,7 +240,7 @@ class Test_NumpyArraySchema:
         print(deser)
 
         # Should lose no precision with integers
-        assert np.alltrue(deser == val)
+        assert np.all(deser == val)
 
     def test_float_list(self):
         sch = NumpyArraySchema()
@@ -253,7 +252,7 @@ class Test_NumpyArraySchema:
         print(deser)
 
         # Should lose no precision low precision floats
-        assert np.alltrue(deser == val)
+        assert np.all(deser == val)
 
     def test_float_precision_loss(self):
         sch = NumpyArraySchema(precision=4)

@@ -4,6 +4,7 @@ cython file used to store all the type info for GNOME.
 Pulled from type_defs.pxi -- i.e pulled from C++ headers, etc.
 
 """
+import numpy as np
 
 # Use the "new" Py3 Enum type
 from enum import IntEnum
@@ -39,7 +40,6 @@ def enum(**enums):
 """
 LE Status as an enum type
 """
-
 class oil_status(IntEnum):
     """
     maps to the C enum
@@ -52,15 +52,6 @@ class oil_status(IntEnum):
     to_be_removed = OILSTAT_TO_BE_REMOVED
     on_tideflat = OILSTAT_ON_TIDEFLAT
 
-
-# oil_status = dict(not_released=OILSTAT_NOTRELEASED,
-#                   in_water=OILSTAT_INWATER,
-#                   on_land=OILSTAT_ONLAND,
-#                   off_maps=OILSTAT_OFFMAPS,
-#                   evaporated=OILSTAT_EVAPORATED,
-#                   to_be_removed=OILSTAT_TO_BE_REMOVED,
-#                   on_tideflat=OILSTAT_ON_TIDEFLAT,
-#                   )
 
 class numerical_methods(IntEnum):
     euler = EULER,
@@ -79,6 +70,7 @@ disperse status as an enum type
 #                    remove = REMOVE,
 #                    have_removed = HAVE_REMOVED)
 #
+
 """
 SpillType {FORECAST_LE = 1, UNCERTAINTY_LE = 2};
 """
@@ -115,9 +107,8 @@ class ts_format(IntEnum):
     r_theta = M19MAGNITUDEDIRECTION
 
 
-cdef Seconds temp
-seconds = type(temp)
-
-
-
-
+# cdef Seconds temp
+# if int(np.__version__.split(".")[0]) < 2:
+#     seconds = type(temp)
+# else:
+#     seconds = np.long

@@ -17,6 +17,7 @@ class BaseMassBalanceOutputter(Outputter):
 
     i.e. averaged properties of the LEs
     """
+    # Note: don't know that this is being used
     units = {'default': 'kg',
              'avg_density': 'kg/m^3',
              'avg_viscosity': 'm^2/s'}
@@ -102,7 +103,7 @@ class WeatheringOutput(BaseMassBalanceOutputter):
 
         if self.output_dir:
             output_filename = self.output_to_file(output_info, step_num)
-            output_info.update({'output_filename': output_filename})
+            output_info.update({'output_filename': str(output_filename)})
 
         return output_info
 

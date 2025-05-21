@@ -15,7 +15,6 @@ from gnome.environment.gridded_objects_base import PyGrid
 from gnome.environment.gridded_objects_base import VariableSchema
 
 from gnome.movers import CyMover, ProcessSchema
-from gnome.persist.validators import convertible_to_seconds
 from gnome.persist.extend_colander import LocalDateTime
 from gnome.utilities.inf_datetime import InfTime, MinusInfTime
 
@@ -24,10 +23,8 @@ class RandomMoverSchema(ProcessSchema):
     diffusion_coef = SchemaNode(Float(), save=True, update=True, missing=drop)
     uncertain_factor = SchemaNode(Float(), save=True, update=True,
                                   missing=drop)
-    data_start = SchemaNode(LocalDateTime(), validator=convertible_to_seconds,
-                            read_only=True)
-    data_stop = SchemaNode(LocalDateTime(), validator=convertible_to_seconds,
-                           read_only=True)
+    data_start = SchemaNode(LocalDateTime(), read_only=True)
+    data_stop = SchemaNode(LocalDateTime(), read_only=True)
 
 
 class RandomMover(CyMover):
@@ -105,6 +102,12 @@ class IceAwareRandomMoverSchema(RandomMoverSchema):
 
 
 class IceAwareRandomMover(RandomMover):
+    """
+    "Random Walk" diffusion mover adjusted for ice concentration
+
+    Moves the elements each time step in a random direction, according to the
+    specified diffusion coefficient and ice concentration (using 80-20 rule).
+    """
 
     _schema = IceAwareRandomMoverSchema
 

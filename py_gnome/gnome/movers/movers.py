@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 
 import numpy as np
 
-from colander import (SchemaNode, TupleSchema, Bool, drop, String)
+from colander import (SchemaNode, TupleSchema, Bool, drop, String, Float)
 
 from gnome.basic_types import (world_point,
                                world_point_type,
@@ -33,12 +33,17 @@ class ProcessSchema(ObjTypeSchema):
     '''
     on = SchemaNode(Bool(), missing=drop, save=True, update=True)
     active_range = TimeRangeSchema()
-    
+
     #flag for client weatherer management system
     _automanaged = SchemaNode(Bool(), missing=drop, save=True, update=True)
 
 
 class PyMoverSchema(ProcessSchema):
+    scale_value = SchemaNode(Float(), save=True, update=True, missing=drop)
+    data_start = SchemaNode(LocalDateTime(), read_only=True)
+    data_stop = SchemaNode(LocalDateTime(), read_only=True)
+    uncertain_duration = SchemaNode(Float())
+    uncertain_time_delay = SchemaNode(Float())
     default_num_method = SchemaNode(String(), missing=drop, save=True, update=True)
 
 class Process(GnomeId):
@@ -47,7 +52,7 @@ class Process(GnomeId):
 
     It defines the base functionality for mover/weatherer.
 
-    NOTE: Since base class is not Serializable, it does not need
+    NOTE: Since base class is not Serializable, it does not need \
           a class level _schema attribute.
     """
 
@@ -129,14 +134,13 @@ class Process(GnomeId):
 
     def prepare_for_model_step(self, sc, time_step, model_time_datetime):
         """
-        sets active flag based on time_span and on flag.
-        Object is active if following hold and 'on' is True:
+        Sets active flag based on time_span and on flag.
+        Object is active if the following hold and 'on' is True:
 
         1. active start <= (model_time + time_step/2) so object is on for
-           more than half the timestep
-        2. (model_time + time_step/2) <= active_stop so again the object is
+           more than half the time step
+        2. (model_time + time_step/2) <= active_stop so the object is
            on for at least half the time step
-           flag to true.
 
         :param sc: an instance of gnome.spill_container.SpillContainer class
         :param time_step: time step in seconds
@@ -154,8 +158,8 @@ class Process(GnomeId):
 
     def model_step_is_done(self, sc=None):
         """
-        This method gets called by the model when after everything else is done
-        in a time step. Put any code need for clean-up, etc in here in
+        This method gets called by the model after everything else is done
+        in a time step. Put any code needed for clean-up, etc in here in
         subclassed movers.
         """
         pass
@@ -177,7 +181,12 @@ class Process(GnomeId):
 
 
 class Mover(Process):
+    """
+    Base class from which all Python movers can inherit
 
+    It defines the base functionality for a mover.
+
+    """
     def get_move(self, sc, time_step, model_time_datetime):
         """
         Compute the move in (long,lat,z) space. It returns the delta move
@@ -187,7 +196,7 @@ class Mover(Process):
         Base class returns an array of numpy.nan for delta to indicate the
         get_move is not implemented yet.
 
-        Each class derived from Mover object must implement it's own get_move
+        Each class derived from Mover object must implement its own get_move
 
         :param sc: an instance of gnome.spill_container.SpillContainer class
         :param time_step: time step in seconds
@@ -211,11 +220,24 @@ class Mover(Process):
 
 
 class PyMover(Mover):
+    """
+    Base class for pure Python movers
+    """
 
     _schema = PyMoverSchema
 
-    def __init__(self, default_num_method='RK2',
+    def __init__(self,
+                 default_num_method='RK2',
                  **kwargs):
+        """
+        Uses ``super(PyMover, self).__init__(**kwargs)`` to call Mover class
+        __init__ method
+
+        We assume any derived class will instantiate a 'mover' object that
+        has methods like: prepare_for_model_run, prepare_for_model_step,
+
+        All kwargs passed on to super class
+        """
         super(PyMover, self).__init__(**kwargs)
 
         self.num_methods = {'RK4': self.get_delta_RK4,
@@ -232,12 +254,12 @@ class PyMover(Mover):
 
     def delta_method(self, method_name=None):
         '''
-            Returns a delta function based on its registered name
+        Returns a delta function based on its registered name
 
-            Usage: delta = self.delta_method('RK2')(**kwargs)
+        Usage: ``delta = self.delta_method('RK2')(**kwargs)``
 
-            Note: We do not handle any key errors resulting from passing in
-            a bad registered name.
+        Note: We do not handle any key errors resulting from passing in
+        a bad registered name.
         '''
         if method_name is None:
             method_name = self.default_num_method
@@ -250,45 +272,51 @@ class PyMover(Mover):
         return vels * time_step
 
     def get_delta_RK2(self, sc, time_step, model_time, pos, vel_field):
-        dt = timedelta(seconds=time_step)
-        dt_s = dt.seconds
-        t = model_time
+        model_time_s = self.datetime_to_seconds(model_time)
+        new_time = model_time_s + time_step
+        new_time_dt = time_utils.sec_to_datetime(new_time)
 
-        v0 = vel_field.at(pos, t)
-        d0 = FlatEarthProjection.meters_to_lonlat(v0 * dt_s, pos)
+        v0 = vel_field.at(pos, model_time)
+        d0 = FlatEarthProjection.meters_to_lonlat(v0 * time_step, pos)
         p1 = pos.copy()
         p1 += d0
 
-        v1 = vel_field.at(p1, t + dt)
+        v1 = vel_field.at(p1, new_time_dt)
 
-        return dt_s / 2 * (v0 + v1)
+        return time_step / 2 * (v0 + v1)
 
     def get_delta_RK4(self, sc, time_step, model_time, pos, vel_field):
-        dt = timedelta(seconds=time_step)
-        dt_s = dt.seconds
-        t = model_time
+        model_time_s = self.datetime_to_seconds(model_time)
+        new_time = model_time_s + time_step
+        new_time2 = model_time_s + time_step / 2
+        new_time_dt = time_utils.sec_to_datetime(new_time)
+        new_time_dt2 = time_utils.sec_to_datetime(new_time2)
 
-        v0 = vel_field.at(pos, t)
-        d0 = FlatEarthProjection.meters_to_lonlat(v0 * dt_s / 2, pos)
+        v0 = vel_field.at(pos, model_time)
+        d0 = FlatEarthProjection.meters_to_lonlat(v0 * time_step / 2, pos)
         p1 = pos.copy()
         p1 += d0
 
-        v1 = vel_field.at(p1, t + dt / 2)
-        d1 = FlatEarthProjection.meters_to_lonlat(v1 * dt_s / 2, pos)
+        v1 = vel_field.at(p1, new_time_dt2)
+        d1 = FlatEarthProjection.meters_to_lonlat(v1 * time_step / 2, pos)
         p2 = pos.copy()
         p2 += d1
 
-        v2 = vel_field.at(p2, t + dt / 2)
-        d2 = FlatEarthProjection.meters_to_lonlat(v2 * dt_s, pos)
+        v2 = vel_field.at(p2, new_time_dt2)
+        d2 = FlatEarthProjection.meters_to_lonlat(v2 * time_step, pos)
         p3 = pos.copy()
         p3 += d2
 
-        v3 = vel_field.at(p3, t + dt)
+        v3 = vel_field.at(p3, new_time_dt)
 
-        return dt_s / 6 * (v0 + 2 * v1 + 2 * v2 + v3)
+        return time_step / 6 * (v0 + 2 * v1 + 2 * v2 + v3)
 
 
 class CyMover(Mover):
+    """
+    Base class for all Cython/C based movers 
+    """
+
     def __init__(self, **kwargs):
         """
         Base class for python wrappers around cython movers.
@@ -299,7 +327,7 @@ class CyMover(Mover):
         derived class, and then contained by this class in the member 'movers'.
         They will need to extract info from spill object.
 
-        We assumes any derived class will instantiate a 'mover' object that
+        We assume any derived class will instantiate a 'mover' object that
         has methods like: prepare_for_model_run, prepare_for_model_step,
 
         All kwargs passed on to super class
@@ -357,23 +385,30 @@ class CyMover(Mover):
                                                   uncertain_spill_count,
                                                   uncertain_spill_size)
             except OSError as e:
-                msg = ('No available data in the time interval '
-                       'that is being modeled\n'
-                       '\tModel time: {}\n'
-                       '\tData available from {} to {}\n'
-                       '\tMover: {} of type {}\n'
-                       '\tError: {}'
-                       .format(model_time_datetime,
-                               self.data_start, self.data_stop,
-                               self.name, self.__class__,
-                               str(e)))
+                if "reference point" in str(e):
+                    msg = ('Reference point not valid '
+                           '\tMover: {} of type {}\n'
+                           '\tError: {}'
+                           .format(self.name, self.__class__,
+                                   str(e)))
+                else:
+                    msg = ('No available data in the time interval '
+                           'that is being modeled\n'
+                           '\tModel time: {}\n'
+                           '\tData available from {} to {}\n'
+                           '\tMover: {} of type {}\n'
+                           '\tError: {}'
+                           .format(model_time_datetime,
+                                   self.data_start, self.data_stop,
+                                   self.name, self.__class__,
+                                   str(e)))
 
                 self.logger.error(msg)
                 raise RuntimeError(msg)
 
     def get_move(self, sc, time_step, model_time_datetime):
         """
-        Base implementation of Cython wrapped C++ movers
+        Base implementation of Cython wrapped C++ movers. 
         Override for things like the PointWindMover since it has a different
         implementation
 

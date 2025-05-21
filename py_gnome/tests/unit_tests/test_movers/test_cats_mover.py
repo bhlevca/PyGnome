@@ -2,9 +2,6 @@
 Test all operations for cats mover work
 '''
 
-
-
-
 import datetime
 import os
 from os.path import basename
@@ -94,6 +91,19 @@ def run_loop():
 
     return delta
 
+def run_no_tide_loop():
+    """
+    test one time step with no tide attached to the mover
+    will check move is different from mover with tide.
+    also checks the motion is same for all LEs
+    """
+
+    pSpill = sample_sc_release(num_le, start_pos, rel_time)
+    cats = CatsMover(curr_file)
+    delta = _certain_loop(pSpill, cats)
+
+    return delta
+
 def test_uncertain_loop():
     """
     test one time step with uncertainty on the spill
@@ -133,10 +143,23 @@ def test_certain_uncertain():
     assert np.all(delta[:, :2] != u_delta[:, :2])
     assert np.all(delta[:, 2] == u_delta[:, 2])
 
+def test_tide_notide():
+    """
+    make sure cats with tide and cats with no tide results in different deltas
+    """
+
+    tide_delta = run_loop()
+    no_tide_delta = run_no_tide_loop()
+    print()
+    print(tide_delta)
+    print(no_tide_delta)
+    assert np.all(tide_delta[:, :2] != no_tide_delta[:, :2])
+    assert np.all(tide_delta[:, 2] == no_tide_delta[:, 2])
+
 
 c_cats = CatsMover(curr_file)
 
-0
+
 def test_default_props():
     """
     test default properties
@@ -161,7 +184,7 @@ def test_scale_value():
     print(c_cats.scale_value)
     assert c_cats.scale_value == 0
 
-
+@pytest.mark.filterwarnings("ignore:CATS reference point not valid")
 @pytest.mark.parametrize("tgt", [(1, 2, 3), (5, 6)])
 def test_scale_refpoint(tgt):
     """
@@ -178,6 +201,11 @@ def test_scale_refpoint(tgt):
     c_cats.scale_refpoint = list(tgt)  # can be a list or a tuple
     assert c_cats.scale_refpoint == tuple(exp_tgt)
 
+	# test for warning using these bad ref points
+    c_cats.scale = True
+    with pytest.warns(UserWarning, match="CATS reference point not valid") as warning:
+        c_cats.scale_refpoint = tgt
+    c_cats.scale = False
 
 # Helper functions for tests
 
@@ -234,12 +262,12 @@ def test_save_load(tide):
     test save/loading with and without tide
     """
 
-    saveloc = tempfile.mkdtemp()
-    c_cats = CatsMover(curr_file, tide=tide)
-    save_json, zipfile_, _refs = c_cats.save(saveloc)
+    with tempfile.TemporaryDirectory() as saveloc:
+        c_cats = CatsMover(curr_file, tide=tide)
+        save_json, zipfile_, _refs = c_cats.save(saveloc)
 
-    assert validate_save_json(save_json, zipfile.ZipFile(zipfile_), c_cats)
+        assert validate_save_json(save_json, zipfile.ZipFile(zipfile_), c_cats)
 
-    loaded = CatsMover.load(zipfile_)
+        loaded = CatsMover.load(zipfile_)
 
-    assert loaded == c_cats
+        assert loaded == c_cats

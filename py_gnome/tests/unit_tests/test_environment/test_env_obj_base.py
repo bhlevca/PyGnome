@@ -95,14 +95,19 @@ class TestTime(object):
         web_ser = t.serialize()
         t2 = self.test_class.deserialize(web_ser)
         assert t == t2
+        
+        # t.tz_offset = 8
+        # web_ser = t.serialize()
+        # t2 = self.test_class.deserialize(web_ser)
+        # assert t == t2
 
     def test_save_load(self, dates):
         t = Time(dates)
-        saveloc = tempfile.mkdtemp()
-        saveloc = os.path.join(saveloc, 'test.zip')
+        with tempfile.TemporaryDirectory() as saveloc:
+            saveloc = os.path.join(saveloc, 'test.zip')
 
-        _references = t.save(saveloc)
-        new_instance = self.test_class.load(saveloc)
+            _references = t.save(saveloc)
+            new_instance = self.test_class.load(saveloc)
 
         assert t == new_instance
 
@@ -169,11 +174,11 @@ class TestTimeseriesData(object):
 
     def test_save_load(self, dates, series_data):
         t = self.get_tsd_instance(dates, series_data)
-        saveloc = tempfile.mkdtemp()
-        saveloc = os.path.join(saveloc, 'test.zip')
+        with tempfile.TemporaryDirectory() as saveloc:
+            saveloc = os.path.join(saveloc, 'test.zip')
 
-        _references = t.save(saveloc)
-        new_instance = self.test_class.load(saveloc)
+            _references = t.save(saveloc)
+            new_instance = self.test_class.load(saveloc)
         assert t == new_instance
 
 
@@ -246,11 +251,11 @@ class TestTimeseriesVector(object):
 
     def test_save_load(self, dates, series_data, series_data2):
         tsv = self.get_tsv_instance(dates, series_data, series_data2)
-        saveloc = tempfile.mkdtemp()
-        saveloc = os.path.join(saveloc, 'test.zip')
+        with tempfile.TemporaryDirectory() as saveloc:
+            saveloc = os.path.join(saveloc, 'test.zip')
 
-        _references = tsv.save(saveloc)
-        new_instance = self.test_class.load(saveloc)
+            _references = tsv.save(saveloc)
+            new_instance = self.test_class.load(saveloc)
 
         assert tsv == new_instance
 
@@ -511,6 +516,51 @@ class TestGridVectorProp(object):
         assert gc.u == gc.variables[0]
         assert gc.varnames[0] == 'u'
 
+
+class TestVariable(object):
+    def test_constant(self):
+        v = Variable.constant(name='temperature', units='K', value=273.15)
+        points = np.array(([0,0,0],[0,1,0]))
+        time = v.time.min_time
+        assert np.all(v.at(points, time) == 273.15)
+        
+    def test_name_incrementing(self):
+        start_idx = Variable._instance_count + 1
+        a = [Variable.constant(value=1) for i in range(10)]
+        assert all([v.name == 'Variable_{0}'.format(i + start_idx) for i, v in enumerate(a)])
+    
+    def test_unit_conversion(self):
+        v = Variable.constant(name='temperature', units='K', value=273.15)
+        points = np.array(([0,0,0],[0,1,0]))
+        time = v.time.min_time
+        assert np.all(v.at(points, time, units='degC') == 0)
+        assert np.all(v.at(points, time, units='degF') == 32)
+        assert np.all(v.at(points, time) == 273.15)
+        
+        v.units = None
+        assert np.all(v.at(points, time, units='degC') == 273.15)
+        assert np.all(v.at(points, time, units='degF') == 273.15)
+        assert np.all(v.at(points, time, units='K') == 273.15)
+    
+    def test_unit_conversion_gnomeunit(self):
+        v = Variable.constant(name='temperature', units='C', value=0)
+        v._gnome_unit = 'K'
+        points = np.array(([0,0,0],[0,1,0]))
+        time = v.time.min_time
+        
+        #should convert to _gnome_unit if not specified
+        assert np.all(v.at(points, time) == 273.15)
+        assert np.all(v.at(points, time, units='degC') == 0)
+        
+        v.units = None
+        # should use _gnome_unit as data unit.
+        assert np.all(v.at(points, time) == 0)
+        assert np.all(v.at(points, time, units='degC') == -273.15)
+        
+        
+        
+        
+        
 
 if __name__ == '__main__':
     pass

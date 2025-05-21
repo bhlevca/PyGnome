@@ -13,8 +13,10 @@ from pytest import raises
 import numpy as np
 
 import netCDF4 as nc
+import gnome.scripting as gs
 
-from gnome.spills import surface_point_line_spill, Spill, Release
+from gnome.spills.spill import point_line_spill, Spill
+from gnome.spills.release import Release
 from gnome.spill_container import SpillContainerPair
 from gnome.weatherers import Evaporation
 from gnome.environment import Water
@@ -38,7 +40,7 @@ def model(sample_model_fcn, output_filename):
 
     model.cache_enabled = True
     model.spills += \
-        surface_point_line_spill(num_elements=5,
+        point_line_spill(num_elements=5,
                                  start_position=sample_model_fcn['release_start_pos'],
                                  release_time=model.start_time,
                                  end_release_time=model.start_time + model.duration,
@@ -58,16 +60,17 @@ def model(sample_model_fcn, output_filename):
     return model
 
 
-def test_init_exceptions():
-    '''
-    test exceptions raised during __init__
-    '''
-    with raises(ValueError):
-        # must be filename, not dir name
-        NetCDFOutput(os.path.abspath(os.path.dirname(__file__)))
-
-    with raises(ValueError):
-        NetCDFOutput('invalid_path_to_file/file.nc')
+# check_filename now happens in prepare_for_model_run
+# def test_init_exceptions():
+#     '''
+#     test exceptions raised during __init__
+#     '''
+#     with raises(ValueError):
+#         # must be filename, not dir name
+#         NetCDFOutput(os.path.abspath(os.path.dirname(__file__)))
+#
+#     with raises(ValueError):
+#         NetCDFOutput('invalid_path_to_file/file.nc')
 
 
 def test_exceptions(output_filename):
@@ -76,7 +79,17 @@ def test_exceptions(output_filename):
     print("output_filename:", output_filename)
     # begin tests
     netcdf = NetCDFOutput(output_filename, which_data='all')
-    netcdf.rewind()  # delete temporary files
+    # netcdf.rewind()  # delete temporary files
+    #netcdf.clean_output_files()  # delete temporary files, incase they got left around
+
+    with raises(ValueError):
+        # must be filename, not dir name
+        file_path = os.path.abspath(os.path.dirname(__file__))
+        NetCDFOutput(file_path).prepare_for_model_run(datetime.now(), spill_pair)
+
+    with raises(ValueError):
+        file_path = 'invalid_path_to_file/file.nc'
+        NetCDFOutput(file_path).prepare_for_model_run(datetime.now(), spill_pair)
 
     with raises(TypeError):
         # need to pass in model start time
@@ -96,7 +109,7 @@ def test_exceptions(output_filename):
     # changed renderer and netcdf ouputter to delete old files in
     # prepare_for_model_run() rather than rewind()
     # -- rewind() was getting called a lot
-    # -- before there was time to change the ouput file names, etc.
+    # -- before there was time to change the output file names, etc.
     # So for this unit test, there should be no exception if we do it twice.
     netcdf.prepare_for_model_run(model_start_time=datetime.now(),
                                  spills=spill_pair,
@@ -116,13 +129,15 @@ def test_exceptions(output_filename):
 def test_exceptions_middle_of_run(model):
     """
     Test attribute exceptions are called when changing parameters in middle of
-    run for 'which_data' and 'filename'
+    run for 'which_data' and 'filename' and ...
     """
     model.rewind()
     model.step()
-    o_put = [model.outputters[outputter.id]
-             for outputter in model.outputters
+
+    # find the netCDF outputter
+    o_put = [outputter for outputter in model.outputters
              if isinstance(outputter, NetCDFOutput)][0]
+
 
     assert o_put.middle_of_run
 
@@ -551,7 +566,7 @@ def test_read_all_arrays(model):
         # 2nd time around, look at uncertain filename so toggle uncertain flag
         uncertain = True
 
-
+@pytest.mark.filterwarnings("ignore: Outputter output timestep")
 @pytest.mark.slow
 @pytest.mark.parametrize("output_ts_factor", [1, 2])
 def test_write_output_post_run(model, output_ts_factor):
@@ -582,8 +597,9 @@ def test_write_output_post_run(model, output_ts_factor):
         assert (not os.path.exists(o_put._u_filename))
 
     # now write netcdf output
-    o_put.write_output_post_run(model.start_time,
-                                model.num_time_steps,
+    o_put.write_output_post_run(model_start_time=model.start_time,
+                                num_time_steps=model.num_time_steps,
+                                model_time_step=3600,
                                 spills=model.spills,
                                 cache=model._cache,
                                 uncertain=model.uncertain)
@@ -651,7 +667,7 @@ def test_serialize_deserialize(output_filename):
     '''
     s_time = datetime(2014, 1, 1, 1, 1, 1)
     model = Model(start_time=s_time)
-    model.spills += surface_point_line_spill(num_elements=5,
+    model.spills += point_line_spill(num_elements=5,
                                              start_position=(0, 0, 0),
                                              release_time=model.start_time)
 
@@ -759,6 +775,39 @@ def test_surface_concentration_output(model):
             surface_conc = dv['surface_concentration']
             # FIXME -- maybe should test something more robust...
             assert not np.all(surface_conc[:] == 0.0)
+
+
+def test_model_stops_in_middle(model):
+    """
+    If the model stops in the middle of a run:
+    e.g. runs out of data, it should still output results.
+    """
+
+    model.duration = gs.hours(2)
+
+    # set up a WindMover that's too short.
+    times = [model.start_time + (gs.minutes(30) * i) for i in range(3)]
+    # long enough record
+    # times = [model.start_time + (gs.minutes(30) * i) for i in range(5)]
+
+    winds = gs.wind_from_values([(dt, 5, 90) for dt in times])
+
+    model.movers += gs.WindMover(winds)
+
+    print(model.movers)
+    # run the model
+    with pytest.raises(Exception):
+        model.full_run()
+
+    # check there are certain and uncertain files with 5 times
+    o_put = model.outputters[0]
+    for file_ in (o_put.filename, o_put._u_filename):
+        assert os.path.exists(file_)
+        with nc.Dataset(file_) as data:
+            dv = data.variables
+            time_ = nc.num2date(dv['time'][:], dv['time'].units,
+                                calendar=dv['time'].calendar)
+            assert len(time_) == 5
 
 
 def _run_model(model):

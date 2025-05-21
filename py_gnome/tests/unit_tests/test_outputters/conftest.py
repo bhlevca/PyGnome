@@ -4,6 +4,8 @@ common fixture for output_dirs required by different outputters
 
 import os
 import pytest
+import zipfile
+from pathlib import Path
 
 
 @pytest.fixture(scope='function')
@@ -29,18 +31,12 @@ def output_dir(request):
     each test module gets its own output dir.
 
     '''
-    #create the dir name from the module path
+    # create the dir name from the module path
     path, name = os.path.split(request.module.__file__)
-    name = os.path.splitext(name)[0].lstrip('test_')
+    name = os.path.splitext(name)[0].removeprefix('test_')
     name = os.path.join(path, "output_"+name)
-
-    # make sure it exists
-    try:
-        os.mkdir(name)
-    except OSError:
-        pass  # already there
-
-    return name
+    os.makedirs(name, exist_ok=True)
+    return Path(name)
 
 
 @pytest.fixture(scope='function')
@@ -49,10 +45,7 @@ def output_filename(output_dir, request):
     trying to create a unique file for tests so pytest_xdist doesn't
     have issues.
     '''
-    dirname = output_dir
-    if not os.path.exists(dirname):
-        os.mkdir(dirname)
-
+    os.makedirs(output_dir, exist_ok=True)
     file_name = request.function.__name__
     extension = request.module.FILE_EXTENSION
     #  This may capture multi-processing pytests
@@ -64,4 +57,26 @@ def output_filename(output_dir, request):
     else:
         file_name = "{}_sample{}".format(file_name, extension)
 
-    return os.path.join(dirname, file_name)
+    return os.path.join(output_dir, file_name)
+
+
+def count_files_in_zip(zip_filepath):
+    """
+    Counts the number of files in a ZIP archive.
+
+    Args:
+        zip_filepath (str): The path to the ZIP file.
+
+    Returns:
+        int: The number of files in the ZIP archive.
+             Returns -1 if the file is not found or is not a valid ZIP file.
+    """
+    try:
+        with zipfile.ZipFile(zip_filepath, 'r') as zip_file:
+            return len(zip_file.namelist())
+    except FileNotFoundError:
+        print(f"Error: File not found: {zip_filepath}")
+        return -1
+    except zipfile.BadZipFile:
+         print(f"Error: Not a valid ZIP file: {zip_filepath}")
+         return -1

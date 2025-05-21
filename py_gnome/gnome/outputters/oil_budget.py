@@ -12,6 +12,7 @@ from .outputter import OutputterFilenameMixin
 from . import BaseOutputterSchema
 from gnome.persist import Boolean, SchemaNode
 
+
 class OilBudgetOutputSchema(BaseOutputterSchema):
     # these fields are saved in the base class so need to override
     #pass
@@ -29,10 +30,10 @@ class OilBudgetOutput(BaseMassBalanceOutputter, OutputterFilenameMixin):
     """
     Outputter for the oil budget table
     """
-    _valid_file_formats = ('csv')
+    _valid_file_formats = {'csv'}
 
     # These go in the oil budget table
-    # note: these need to be kept insync!
+    # note: these need to be kept in sync!
     budget_categories = ['amount_released',
                          'evaporated',
                          'natural_dispersion',
@@ -43,14 +44,14 @@ class OilBudgetOutput(BaseMassBalanceOutputter, OutputterFilenameMixin):
                          ]
     header_row = ['Model Time',
                   'Hours Since Model Start',
-                  'Amount Released',
-                         'Evaporated',
-                         'Dispersed',
-                         'Sedimentation',
-                         'Beached',
-                         'Floating',
-                         'Off_maps',
-                         ]
+                  'Amount Released (kg)',
+                  'Evaporated (kg)',
+                  'Dispersed (kg)',
+                  'Sedimentation (kg)',
+                  'Beached (kg)',
+                  'Floating (kg)',
+                  'Off_maps (kg)',
+                  ]
 
 
     _schema = OilBudgetOutputSchema
@@ -94,6 +95,7 @@ class OilBudgetOutput(BaseMassBalanceOutputter, OutputterFilenameMixin):
         super(OilBudgetOutput, self).prepare_for_model_run(model_start_time,
                                                            spills,
                                                            **kwargs)
+        self._check_is_dir(self.filename)
         outfile = open(self.filename, 'w', newline='')
         self.csv_writer = csv.writer(outfile)
         # write the header
@@ -117,24 +119,18 @@ class OilBudgetOutput(BaseMassBalanceOutputter, OutputterFilenameMixin):
 
         mass_balance_data = self.gather_mass_balance_data(step_num)
 
-        # print "data:"
-        # print mass_balself._model_start_time).total_seconds() / 3600
         model_time = mass_balance_data['model_time']
         run_time = (model_time - self._model_start_time).total_seconds()
         hours = int(run_time // 3600)
         minutes = int((run_time - hours * 3600) // 60)
         row = [model_time.strftime("%Y-%m-%d %H:%M"),
-               hours+minutes/60]
-               #"{}:{:02d}".format(hours, minutes)]
-#         row = ["{}:{:02d}".format(hours, minutes),
-#                model_time.strftime("%Y-%m-%d %H:%M")]
+               hours + minutes / 60]
         for category in self.budget_categories:
             try:
-                row.append(mass_balance_data[category])
-            except:
-                val=''
+                row.append(f" {mass_balance_data[category]:.8g}")
+            except KeyError:
+                val = ''
                 row.append(val)
-            #row.append(mass_balance_data[category])
         self.csv_writer.writerow(row)
 
     def post_model_run(self):

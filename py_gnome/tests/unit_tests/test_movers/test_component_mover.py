@@ -135,8 +135,8 @@ def test_get_scaled_velocities_two_patterns():
     vels = component.get_scaled_velocities(time_utils.date_to_sec(rel_time))
 
     # not much of test -- but at least we're not getting NaNs...
-    assert np.alltrue(np.isfinite(vels['u']))
-    assert np.alltrue(np.isfinite(vels['v']))
+    assert np.all(np.isfinite(vels['u']))
+    assert np.all(np.isfinite(vels['v']))
 
     # note: these values were pulled from making this call
     #       so may not be correct, but this will catch a regression
@@ -152,8 +152,8 @@ def test_get_scaled_velocities_one_pattern():
     vels = component.get_scaled_velocities(time_utils.date_to_sec(rel_time))
 
     # not much of test -- but at least we're not getting NaNs...
-    assert np.alltrue(np.isfinite(vels['u']))
-    assert np.alltrue(np.isfinite(vels['v']))
+    assert np.all(np.isfinite(vels['u']))
+    assert np.all(np.isfinite(vels['v']))
 
     # note: these values were pulled from making this call
     #       so may not be correct, but this will catch a regression
@@ -265,10 +265,9 @@ def test_save_load(wind):
     create a new Component mover and make sure it has same properties
     """
 
-    saveloc = tempfile.mkdtemp()
-    c_component = ComponentMover(curr1_file, wind=wind)
-    json_, saveloc, refs = c_component.save(saveloc)
-    loaded =  ComponentMover.load(saveloc)
+    with tempfile.TemporaryDirectory() as saveloc:
+        c_component = ComponentMover(curr1_file, wind=wind)
+        json_, saveloc, refs = c_component.save(saveloc)
+        loaded =  ComponentMover.load(saveloc)
 
     assert loaded == c_component
-

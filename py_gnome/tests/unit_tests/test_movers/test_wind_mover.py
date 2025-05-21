@@ -17,7 +17,7 @@ from gnome.utilities import convert
 
 from gnome.environment import Wind
 
-from gnome.spills import surface_point_line_spill
+from gnome.spills.spill import point_line_spill
 from gnome.spill_container import SpillContainer
 from gnome.spills.substance import NonWeatheringSubstance
 
@@ -463,6 +463,37 @@ class TestWindMover(object):
 
         self.wm.model_step_is_done()
 
+    def test_get_move_backwards(self):
+        """
+        Test the backward get_move(...) results in PointWindMover match the expected delta
+        """
+        self.time_step = -self.time_step
+        for ix in range(2):
+            curr_time = sec_to_date(date_to_sec(self.model_time) +
+                                    self.time_step * ix)
+            self.wm.prepare_for_model_step(self.sc, self.time_step, curr_time)
+
+            delta = self.wm.get_move(self.sc, self.time_step, curr_time)
+            actual = self._expected_move()
+
+            # the results should be independent of model time
+            tol = 1e-8
+
+            msg = ('{0} is not within a tolerance of '
+                   '{1}'.format('PointWindMover.get_move()', tol))
+            np.testing.assert_allclose(delta, actual, tol, tol, msg, 0)
+
+            assert self.wm.active
+
+            ts = date_to_sec(curr_time) - date_to_sec(self.model_time)
+            print(('Time step [sec]:\t{0}'
+                   'C++ delta-move:\n{1}'
+                   'Expected delta-move:\n{2}'
+                   ''.format(ts, delta, actual)))
+
+        self.wm.model_step_is_done()
+        self.time_step = -self.time_step
+
     def test_get_move_exceptions(self):
         curr_time = sec_to_date(date_to_sec(self.model_time) + self.time_step)
         tmp_windages = self.sc._data_arrays['windages']
@@ -503,13 +534,12 @@ def test_windage_index():
     rel_time = datetime(2013, 1, 1, 0, 0)
     timestep = 30
     for i in range(2):
-        spill = surface_point_line_spill(num_elements=5,
-                                         start_position=(0., 0., 0.),
-                                         release_time=rel_time + i * timedelta(hours=1),
-                                         substance=NonWeatheringSubstance(windage_range=(i * .01 +
-                                                               .01, i * .01 + .01),
-                                                               windage_persist=900)
-                                         )
+        spill = point_line_spill(
+            num_elements=5,
+            start_position=(0., 0., 0.),
+            release_time=rel_time + i * timedelta(hours=1),
+            substance=NonWeatheringSubstance(windage_range=(i * .01 + .01, i * .01 + .01),
+                                             windage_persist=900))
         sc.spills.add(spill)
 
     #windage = ['windages', 'windage_range', 'windage_persist']

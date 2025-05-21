@@ -1,5 +1,7 @@
 '''
 tests for oil budget outputter
+
+WARNING: not well tested! doesn't actually test the output -- hopefully that's being tested elsewhere!
 '''
 
 import os
@@ -21,7 +23,7 @@ from gnome.weatherers import (Evaporation,
                               Skimmer,
                               Burn,
                               )
-from gnome.spills import surface_point_line_spill
+from gnome.spills.spill import point_line_spill
 
 from gnome.outputters import OilBudgetOutput
 
@@ -53,7 +55,7 @@ def model(sample_model):
     model.duration = gs.days(1)
     end_time = start_time + gs.hours(1)
 
-    spill = surface_point_line_spill(100,
+    spill = point_line_spill(100,
                                      start_position=rel_start_pos,
                                      release_time=start_time,
                                      end_release_time=start_time + gs.hours(1),
@@ -134,7 +136,6 @@ def test_model_full_run_output_short_interval(model, output_dir):
     model.outputters += OilBudgetOutput(outfilename,
                                         output_timestep=gs.minutes(30))
 
-    print(OilBudgetOutput.clean_output_files)
 
     model.rewind()
 
@@ -149,11 +150,6 @@ def test_model_full_run_output_short_interval(model, output_dir):
     # read the file in and test a couple things
     csv_file = open(out_filename).readlines()
 
-    print("file is:", end=' ')
-    print(csv_file)
-
-    print(len(csv_file))
-
     assert len(csv_file) == 50
 
     assert csv_file[0].split(",")[0] == "Model Time"
@@ -161,43 +157,49 @@ def test_model_full_run_output_short_interval(model, output_dir):
     assert csv_file[1].split(",")[0].strip() == "2012-09-15 12:00"
     assert csv_file[2].split(",")[0].strip() == "2012-09-15 12:30"
 
-    print(csv_file[-1])
     assert csv_file[-1].split(",")[0].strip() == "2012-09-16 12:00"
 
-    # # floating mass at beginning of step - though tests will only pass for
-    # # nominal values
-    # for step in model:
-    #     assert 'WeatheringOutput' in step  # this isn't really where this
-    #     sum_mass = 0.0
-    #     for key in step['WeatheringOutput']:
-    #         if not isinstance(step['WeatheringOutput'][key], dict):
-    #             continue
+    # for line in csv_file:
+    #     print(line)
+    #     print()
 
-    #         for process in ('evaporated', 'burned', 'skimmed', 'dispersed'):
-    #             assert (process in step['WeatheringOutput'][key])
-    #             sum_mass += step['WeatheringOutput'][key][process]
-
-    #         assert (step['WeatheringOutput'][key]['floating'] <=
-    #                 step['WeatheringOutput'][key]['amount_released'])
-    #         # For nominal, sum up all mass and ensure it equals the mass at
-    #         # step initialization - ignore step 0
-    #         sum_mass += step['WeatheringOutput'][key]['floating']
-    #         np.isclose(sum_mass,
-    #                    step['WeatheringOutput'][key]['amount_released'])
-
-    #     print 'Completed step: ', step['step_num']
-
-    # # removed last test and do the assertion here itself instead of writing to
-    # # file again which takes awhile!
-    # if output_dir is not None:
-    #     files = glob(os.path.join(output_dir, '*.json'))
-    #     assert len(files) == model.num_time_steps
+    # assert False
 
 
-# def test_rewind(model, output_dir):
-#     """
-#     test that everything gets properly reset when rewound
-#     """
-#     assert False
+#@pytest.mark.xfail
+# NOTE: This currently fails because the model isn't allowing partial runs to output
+def test_model_stops_in_middle(model, output_dir):
+    '''
+    If the model stops in the middle of a run:
+    e.g. runs out of data, it should still output results.
+
+    '''
+
+    outfilename = os.path.join(output_dir, "stop_in_middle.csv")
+
+    # set up a WindMover that's too short.
+    times = [model.start_time + (gs.minutes(30) * i) for i in range(3)]
+    # long enough record
+    # times = [model.start_time + (gs.minutes(30) * i) for i in range(5)]
+
+    winds = gs.wind_from_values([(dt, 5, 90) for dt in times])
+
+    model.movers += gs.WindMover(winds)
+
+    model.outputters += OilBudgetOutput(outfilename,
+                                        output_timestep=gs.minutes(30))
 
 
+    with pytest.raises(Exception):
+        model.full_run()
+
+    # check file was created
+
+    out_filename = os.path.join(output_dir, outfilename)
+    assert os.path.isfile(out_filename)
+
+
+    # read the file in and check it is the right length
+    csv_file = open(out_filename).readlines()
+
+    assert len(csv_file) == 4

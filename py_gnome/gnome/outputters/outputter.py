@@ -13,13 +13,14 @@ import os
 
 from datetime import timedelta
 
+import warnings
+
 from gnome.persist import (
     SchemaNode,
     Boolean,
     drop,
     String,
     ObjTypeSchema,
-    validators,
     TimeDelta,
     LocalDateTime,
 )
@@ -51,7 +52,6 @@ class BaseOutputterSchema(ObjTypeSchema):
     )
     output_start_time = SchemaNode(
         LocalDateTime(),
-        validator=validators.convertible_to_seconds,
         missing=drop, save=True, update=True
     )
     surface_conc = SchemaNode(
@@ -86,51 +86,50 @@ class Outputter(GnomeId):
                  *args,
                  **kwargs):
         """
-        Sets attributes for all outputters, like output_timestep, cache, etc.
+        Sets attributes for outputters, like output_timestep, cache, etc.
 
         :param cache: sets the cache object from which to read data. The model
-            will automatically set this param
+                      will automatically set this parameter.
 
-        :param output_timestep: default is None in which case every time the
-            write_output is called, output is written. If set, then output is
-            written every output_timestep starting from model_start_time.
-            If set to zero only a single time is output, the output_start_time.
+        :param output_timestep=None: If ``None`` output will be written every model time step.
+                                     If set, then output is written every output_timestep
+                                     starting from the model start time. If the output_timestep
+                                     is less than the model timestep, an Warning will be raised
+                                     at runtime.
         :type output_timestep: timedelta object
 
-        :param output_zero_step: default is True. If True then output for
-            initial step (showing initial release conditions) is written
-            regardless of output_timestep
-        :type output_zero_step: boolean
+        :param output_zero_step=True: If True then output for initial step (showing initial
+                                      release conditions) is written regardless of
+                                      ``output_timestep`` or ``output_single_step``
+        :type output_zero_step: bool
 
-        :param output_last_step: default is True. If True then output for
-            final step is written regardless of output_timestep. This is
-            potentially an extra output, not aligne withe the output_timestep.
-        :type output_last_step: boolean
+        :param output_last_step=True: If True then output for final step is written
+                                      regardless of ``output_timestep`` or ``output_single_step``.
+                                      This is potentially an extra output, if not aligned with
+                                      ``output_timestep``.
+        :type output_last_step: bool
 
-        :param output_single_step: default is False. If True then output is written
-            for only one step, the output_start_time, regardless of output_timestep.
-        :type output_last_step: boolean
+        :param output_single_step=False: If ``True`` then output is written for only one
+                                         step, the output_start_time, regardless of ``output_timestep``.
+                                         ``output_zero_step`` and ``output_last_step`` are still
+                                         respected, set these to False if you want only one time step.
+        :type output_single_step: boolean
 
-        :param output_start_time: default is None in which case it is set to
-            the model time
+        :param output_start_time=None: Time to start outputting restults. If None it is set to the model
+                                       start time
         :type output_start_time: datetime object
 
-        :param output_dir=None: directory to dump ouput in, if it needs to
-                                do this.
-        :type output_dir: string (path)
+        :param output_dir=None: Directory to dump output in, if it needs to do this.
+        :type output_dir: PathLike
 
-        :param surface_conc = None: Compute surface concentration
-                                  Any non-zero string will compute (and output)
-                                  the surface concentration the contents of the
+        :param surface_conc=None: Compute surface concentration
+                                  Any non-empty string will compute (and output)
+                                  the surface concentration. The contents of the
                                   string determine the algorithm used. "kde" is
-                                  currently the only working option.
-        :type surface_conc: string or None
+                                  currently the only available option.
+        :type surface_conc: str or None
         """
 
-        # flag to keep track of _state of the object - is True after calling
-        # prepare_for_model_run
-        ## fixme -- why should this be initializable???
-        # self._middle_of_run = kwargs.pop('_middle_of_run', False)
         self._middle_of_run = False
 
         super(Outputter, self).__init__(*args, **kwargs)
@@ -141,11 +140,7 @@ class Outputter(GnomeId):
         self.output_last_step = output_last_step
         self.output_single_step = output_single_step
 
-        if output_timestep:
-        #if output_timestep is not None: # allow for output_timestep = 0
-            self._output_timestep = int(output_timestep.total_seconds())
-        else:
-            self._output_timestep = None
+        self.output_timestep = output_timestep
 
         if output_start_time:
             self.output_start_time = output_start_time
@@ -189,12 +184,18 @@ class Outputter(GnomeId):
         if value is None:
             self._output_timestep = None
         else:
-            self._output_timestep = value.total_seconds()
+            #if value == timedelta(0):
+                #raise ValueError("output_timestep cannot be zero")
+            if value <= timedelta(0):
+                raise ValueError("output_timestep must be positive")
+            self._output_timestep = int(value.total_seconds())
 
     def prepare_for_model_run(self,
                               model_start_time=None,
                               spills=None,
                               model_time_step=None,
+                              map=None,
+                              model_name=None,
                               **kwargs):
         """
         This method gets called by the model at the beginning of a new run.
@@ -233,23 +234,46 @@ class Outputter(GnomeId):
         if model_start_time is None:
             raise TypeError("model_start_time is a required parameter")
 
+        if hasattr(self, 'filename'):
+            self._check_filename(self.filename)
         self.clean_output_files()
 
         self._model_start_time = model_start_time
         self.model_timestep = model_time_step
-
         self.sc_pair = spills
+
+        if self._output_timestep is not None:
+#             if self._output_timestep < 0 and model_time_step > 0:
+#                 warnings.warn(f"Outputter output timestep {self.output_timestep} is less than "
+#                               f"zero.", RuntimeWarning)
+#             if self._output_timestep > 0 and model_time_step < 0:
+#                 warnings.warn(f"Outputter output timestep {self.output_timestep} is greater than "
+#                               f"zero.", RuntimeWarning)
+            if abs(self._output_timestep) < abs(model_time_step):
+                warnings.warn(f"Outputter output timestep {self.output_timestep} is less than "
+                              f"model time step: {model_time_step} seconds. "
+                              "Output will only occur every model timestep.",
+                              RuntimeWarning)
+
 
         cache = kwargs.pop('cache', None)
         if cache is not None:
             self.cache = cache
 
-        if self._output_timestep is None:
+        self.map = map
+        self.model_name = model_name
+        if self.output_timestep is None:
             self._write_step = True
 
         self._dt_since_lastoutput = 0
         self._middle_of_run = True
 
+        # kludge to catch special case of single output at the model start time
+        if self.output_single_step and ((self.output_start_time == model_start_time)
+                                        or self.output_start_time is None):
+            self._single_output_at_start = True
+        else:
+            self._single_output_at_start = False
 
     def prepare_for_model_step(self, time_step, model_time):
         """
@@ -273,6 +297,9 @@ class Outputter(GnomeId):
 
         """
 
+        if not self.on:
+            return
+
         self._surf_conc_computed = False
 
         d = timedelta(seconds=time_step)
@@ -287,7 +314,8 @@ class Outputter(GnomeId):
                     self._is_first_output = False
                     return
 
-                if model_time + d > self.output_start_time:
+                if ((model_time + d > self.output_start_time and time_step > 0) or
+                    (model_time + d < self.output_start_time and time_step < 0)):
                     if self._is_first_output:
                         self._write_step = True
                         self._is_first_output = False
@@ -301,7 +329,7 @@ class Outputter(GnomeId):
             self._write_step = False
             self._dt_since_lastoutput += time_step
 
-            if self._dt_since_lastoutput >= self._output_timestep:
+            if abs(self._dt_since_lastoutput) >= abs(self._output_timestep):
                 self._write_step = True
                 self._dt_since_lastoutput = (self._dt_since_lastoutput %
                                              self._output_timestep)
@@ -336,7 +364,7 @@ class Outputter(GnomeId):
 
         """
         if step_num == 0:
-            if self.output_zero_step:
+            if self.output_zero_step or self._single_output_at_start:
                 self._write_step = True  # this is the default
             else:
                 self._write_step = False
@@ -354,8 +382,8 @@ class Outputter(GnomeId):
         # this updates the most recent one in the cache
 
         if (self._write_step
-            and self.surface_conc is not None
-            and not self._surf_conc_computed):
+                and self.surface_conc is not None
+                and not self._surf_conc_computed):
             # compute the surface concentration and put it in the cache
             try:
                 sc = self.cache.recent[step_num][0]  # only the certain one
@@ -419,13 +447,16 @@ class Outputter(GnomeId):
         self._is_first_output = True
         self._surf_conc_computed = True
         self._middle_of_run = False
+        self.cleaned_up = False
 
         if self.surface_conc:
             self.array_types['surface_concentration'] = gat('surface_concentration')
             self.array_types['volumetric_concentration'] = gat('volumetric_concentration')
 
     def write_output_post_run(self,
+                              *,
                               model_start_time,
+                              model_time_step,
                               num_time_steps,
                               **kwargs):
         """
@@ -441,7 +472,7 @@ class Outputter(GnomeId):
             run. Currently this is known and fixed.
         :type num_time_steps: int
 
-        Optional argument - depending on the outputter, the following maybe
+        Optional argument - depending on the outputter, the following may be
         required. For instance, the 'spills' are required by NetCDFOutput,
         GeoJson, but not Renderer in prepare_for_model_run(). The ``**kwargs``
         here are those required by prepare_for_model_run() for an outputter
@@ -463,7 +494,9 @@ class Outputter(GnomeId):
 
         Follows the iteration in Model().step() for each step_num
         """
-        self.prepare_for_model_run(model_start_time, **kwargs)
+        self.prepare_for_model_run(model_start_time=model_start_time,
+                                   model_time_step=model_time_step,
+                                   **kwargs)
 
         model_time = model_start_time
         last_step = False
@@ -491,12 +524,18 @@ class Outputter(GnomeId):
     # Some utilities for checking valid filenames, etc...
     def _check_filename(self, filename):
         'basic checks to make sure the filename is valid'
-        if os.path.isdir(filename):
-            raise ValueError('filename must be a file not a directory.')
+        # path.isdir causes problems for shapefile; outputters call as needed
+        #if os.path.isdir(filename):
+            #raise ValueError('filename must be a file not a directory.')
 
         if not os.path.exists(os.path.realpath(os.path.dirname(filename))):
             raise ValueError('{0} does not appear to be a valid path'
                              .format(os.path.dirname(filename)))
+
+    def _check_is_dir(self, filename):
+        'split this out - causes problems for shape and most outputters dont need it'
+        if os.path.isdir(filename):
+            raise ValueError('filename must be a file not a directory.')
 
     def _file_exists_error(self, file_):
         """
@@ -518,9 +557,7 @@ class OutputterFilenameMixin(object):
     """
     mixin for outputter that output to a single file
     """
-
     def __init__(self, filename, *args, **kwargs):
-
         super(OutputterFilenameMixin, self).__init__(**kwargs)
         self.filename = filename
 
@@ -534,7 +571,9 @@ class OutputterFilenameMixin(object):
             raise AttributeError('This attribute cannot be changed in the '
                                  'middle of a run')
         else:
-            self._check_filename(new_name)
+            # move to prepare for model run so save files with outputters
+            # can be loaded
+            # self._check_filename(new_name)
             self._filename = new_name
 
     def clean_output_files(self):
@@ -550,7 +589,3 @@ class OutputterFilenameMixin(object):
             os.remove(self.filename)
         except OSError:
             pass  # it must not be there
-
-
-
-

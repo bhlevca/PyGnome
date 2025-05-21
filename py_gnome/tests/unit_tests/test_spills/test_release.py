@@ -14,12 +14,13 @@ import pytest
 import numpy as np
 
 from gnome.spills import (Release,
-                         PointLineRelease,
-                         PolygonRelease,
-                         #GridRelease,
-                         )
+                          PointLineRelease,
+                          PolygonRelease,
+                          #GridRelease,
+                          )
 from gnome.spills.release import release_from_splot_data
 from gnome.spills.le import LEData
+from gnome.utilities.time_utils import TZOffset
 
 
 def test_init():
@@ -197,6 +198,46 @@ class TestPointLineRelease(object):
         ser = r1.serialize()
         deser = PointLineRelease.deserialize(ser)
         assert deser == r1
+
+    def test_LE_initialization_instantaneous(self, r2):
+        #initialize_LEs(self, to_rel, data, current_time, time_step)
+        data = LEData()
+        ts = 900
+        r = r2
+        num_le = 0
+        r.prepare_for_model_run(ts)
+
+        data.prepare_for_model_run(r.array_types, None)
+        data.extend_data_arrays(10)
+        #initialize over the time interval 0-10%
+        r.initialize_LEs(10, data, r.release_time, r.release_time+timedelta(seconds=ts))
+
+        #particles should have positions spread over the
+        #line from start_position to end_position
+        assert len(data['positions']) == 10
+        for pos in data['positions']:
+            for d in [0,1,2]:
+                #instantaneous so particles should be spread across whole line
+                assert pos[d] >= r.start_position[d] + num_le
+            num_le += 1
+
+        assert np.all(data['mass'] == r._mass_per_le)
+
+        #reset and try overlap beginning
+        data.rewind()
+        num_le = 0
+        data.prepare_for_model_run(r.array_types, None)
+        data.extend_data_arrays(100)
+        #initialize 100 LEs overlapping the start of the release
+        r.initialize_LEs(100, data, r.release_time - timedelta(seconds=ts/2), r.release_time)
+        for pos in data['positions']:
+            for d in [0,1,2]:
+                #instantaneous so particles should be spread across whole line
+                assert pos[d] >= r.start_position[d] + num_le*.1
+            num_le += 1
+
+        assert np.all(data['mass'] == r._mass_per_le)
+
 
     #This isn't supported yet in pytest????
     #@pytest.mark.parametrize('r', [r1, r3])
@@ -417,8 +458,29 @@ class TestPolygonRelease:
         sr1.prepare_for_model_run(900)
         ser = sr1.serialize()
         deser = PolygonRelease.deserialize(ser)
-        assert deser == sr1
-
+        assert deser == sr1\
+    
+    def test_timezone_offset(self, sr1):
+        assert sr1.timezone_offset.offset is None
+        o_rel_time = sr1.release_time
+        o_end_rel_time = sr1.end_release_time
+        
+        # None -> Offset (no change)
+        sr1.timezone_offset = TZOffset(offset=1)
+        assert sr1.release_time == o_rel_time
+        assert sr1.end_release_time == o_end_rel_time
+        
+        #Offset -> offset (change)
+        sr1.timezone_offset = TZOffset(offset=2)
+        assert sr1.release_time == o_rel_time + timedelta(hours=1)
+        assert sr1.end_release_time == o_end_rel_time + timedelta(hours=1)
+        sr1.timezone_offset = TZOffset(offset=1)
+        
+        #Offset -> None (no change)
+        sr1.timezone_offset = None
+        assert sr1.release_time == o_rel_time
+        assert sr1.end_release_time == o_end_rel_time
+        
 
 def test_release_from_splot_data():
     '''

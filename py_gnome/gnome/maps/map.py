@@ -9,10 +9,8 @@ The module includes a base map that is all water -- no land,
 As well as a few implementations of actual maps
 """
 
-# This is a re-write of the C++ raster map approach
-
-# Features:
-#  - Map now handles spillable area and map bounds as polygons
+# RasterMap is the primary implimentation:
+#  - Map handles spillable area and map bounds as polygons
 #  - raster is the same aspect ratio as the land
 #  - internally, raster is a numpy array
 #  - land raster is only as big as the land -- if the map bounds are bigger,
@@ -21,7 +19,6 @@ As well as a few implementations of actual maps
 # NOTES:
 #  - Perhaps we just use non-projected coordinates for the raster map?
 #    It makes for a little less computation at every step.
-
 
 import os
 import math
@@ -105,12 +102,12 @@ class GnomeMap(GnomeId):
     The very simplest map for GNOME -- all water
     with only a bounding box for the map bounds.
 
-    This also serves as a description of the interface and
-    base class for more complex maps
+    Also the base class for all maps.
+    # This also serves as a description of the interface and
+    # base class for more complex maps
     """
-    _schema = GnomeMapSchema
 
-    refloat_halflife = None  # note -- no land, so never used
+    _schema = GnomeMapSchema
     _ref_as = 'map'
 
     def __init__(self,
@@ -118,22 +115,23 @@ class GnomeMap(GnomeId):
                  spillable_area=None,
                  land_polys=None,
                  **kwargs):
+
+        # The __init__ will be different for other implementations
         """
-        The __init__ will be different for other implementations
+        :param map_bounds: The polygon bounding the map.
+                           If any elements are outside the map bounds,
+                           they are removed from the simulation.
 
-        :param map_bounds: The polygon bounding the map if any elements are
-                           outside the map bounds, they are removed from the
-                           simulation.
-
-        :param spillable_area: The PolygonSet bounding the spillable_area.
-        :type spillable_area: Either a PolygonSet object or a list of lists
-            from which a polygon set can be created. Each element in the list
-            is a list of points defining a polygon.
+        :param spillable_area: The `PolygonSet` bounding the spillable_area.
+        :type spillable_area: Either a `PolygonSet` object or a list of lists
+                              from which a polygon set can be created. Each
+                              element in the list is a list of points defining
+                              a polygon.
 
         :param land_polys: The PolygonSet holding the land polygons
-        :type land_polys: Either a PolygonSet object or a list of lists
-            from which a polygon set can be created. Each element in the list
-            is a list of points defining a polygon.
+        :type land_polys: Either a PolygonSet object or a list of lists from
+                          which a polygon set can be created. Each element in
+                          the list is a list of points defining a polygon.
 
         Note on 'map_bounds':
             ``[(lon, lat), (lon, lat), (lon, lat), ..``
@@ -152,6 +150,20 @@ class GnomeMap(GnomeId):
 
         self.spillable_area = spillable_area
         self.land_polys = land_polys
+
+    @property
+    def refloat_halflife(self):
+        return self._refloat_halflife / self.seconds_in_hour
+
+    @refloat_halflife.setter
+    def refloat_halflife(self, value):
+        self._refloat_halflife = value * self.seconds_in_hour
+
+    def __add__(self, other):
+        # Just so pyghnome users will get a helpful message
+        # if the do: model.map += a_map
+        raise TypeError("You can't add to a map.\n"
+                        "If you want to replace the map, try gnome_model.map = a_new_map")
 
     def get_polygons(self):
         polys = {}
@@ -189,7 +201,7 @@ class GnomeMap(GnomeId):
 
     def _attr_from_list_to_array(self, l_):
         '''
-        dict returned as list of tuples to be converted to numpy array
+        dict returned as list of tuples to be converted to numpy array.
         Again used to update_from_dict map_bounds and spillable_area
         '''
         return np.asarray(l_, dtype=np.float64).reshape(-1, 2)
@@ -354,23 +366,29 @@ class GnomeMap(GnomeId):
                 return True
         return False
 
-    def _set_off_map_status(self, spill):
+    def _set_off_map_status(self, sc):
         """
         Determines which elements moved off the map
 
         Called by beach_elements after checking for land-hits
 
-        :param spill: current SpillContainer
-        :type spill:  :class:`gnome.spill_container.SpillContainer`
+        :param sc: current SpillContainer
+        :type sc:  :class:`gnome.spill_container.SpillContainer`
         """
-        next_positions = spill['next_positions']
-        status_codes = spill['status_codes']
+        next_positions = sc['next_positions']
+        status_codes = sc['status_codes']
         off_map = np.logical_not(self.on_map(next_positions))
         if len(next_positions) != 0 and np.all(off_map):
             self.logger.warning("All particles left the map this timestep.")
 
         # let model decide if we want to remove elements marked as off-map
         status_codes[off_map] = oil_status.off_maps
+
+        sc.mass_balance['beached'] = \
+            sc['mass'][sc['status_codes'] == oil_status.on_land].sum()
+        sc.mass_balance['off_maps'] += \
+            sc['mass'][sc['status_codes'] == oil_status.off_maps].sum()
+
 
     def beach_elements(self, sc, model_time=None):
         """
@@ -379,16 +397,16 @@ class GnomeMap(GnomeId):
 
         Called by the model in the main time loop, after all movers have acted.
 
-        :param spill: current SpillContainer
-        :type spill:  :class:`gnome.spill_container.SpillContainer`
+        :param sc: current SpillContainer
+        :type sc:  :class:`gnome.spill_container.SpillContainer`
 
         This map class has no land, so only the map check and
         resurface_airborn elements is done: noting else changes.
 
         subclasses that override this probably want to make sure that:
 
-        self.resurface_airborne_elements(spill)
-        self._set_off_map_status(spill)
+        self.resurface_airborne_elements(sc)
+        self._set_off_map_status(sc)
 
         are called.
         """
@@ -456,6 +474,7 @@ class ParamMap(GnomeMap):
         :param bearing: The bearing the closest point on the shoreline is
                         from the center.
         """
+        warnings.warn("ParamMap is deprecated. Code is no longer being updated", DeprecationWarning)
         refloat_halflife = kwargs.pop('refloat_halflife', 1)
         self._refloat_halflife = refloat_halflife * 3600
         self.build(center, distance, bearing, units)
@@ -585,21 +604,22 @@ class ParamMap(GnomeMap):
             # that this map was built with
             return False
 
-    def _set_off_map_status(self, spill):
-        """
-        Determines which LEs moved off the map
+    # This was re-defined from the base class
+    # def _set_off_map_status(self, spill):
+    #     """
+    #     Determines which LEs moved off the map
 
-        Called by beach_elements after checking for land-hits
+    #     Called by beach_elements after checking for land-hits
 
-        :param spill: current SpillContainer
-        :type spill:  :class:`gnome.spill_container.SpillContainer`
-        """
-        next_positions = spill['next_positions']
-        status_codes = spill['status_codes']
-        off_map = np.logical_not(self.on_map(next_positions))
+    #     :param spill: current SpillContainer
+    #     :type spill:  :class:`gnome.spill_container.SpillContainer`
+    #     """
+    #     next_positions = spill['next_positions']
+    #     status_codes = spill['status_codes']
+    #     off_map = np.logical_not(self.on_map(next_positions))
 
-        # let model decide if we want to remove elements marked as off-map
-        status_codes[off_map] = oil_status.off_maps
+    #     # let model decide if we want to remove elements marked as off-map
+    #     status_codes[off_map] = oil_status.off_maps
 
     def find_last_water_pos(self, starts, ends):
         return starts + (ends - starts) * 0.000001
@@ -635,6 +655,8 @@ class ParamMap(GnomeMap):
         # todo: need a prepare_for_model_run() so map adds these keys to
         #     mass_balance as opposed to SpillContainer
         # update 'off_maps'/'beached' in mass_balance
+        # note: this requires that the elements get removed before the
+        #       next timestep, or it would get double counted.
         sc.mass_balance['beached'] = \
             sc['mass'][sc['status_codes'] == oil_status.on_land].sum()
         sc.mass_balance['off_maps'] += \
@@ -852,13 +874,13 @@ class RasterMap(GnomeMap):
         self._raster = np.ascontiguousarray(arr)
         self.build_coarser_rasters()
 
-    @property
-    def refloat_halflife(self):
-        return self._refloat_halflife / self.seconds_in_hour
+    # @property
+    # def refloat_halflife(self):
+    #     return self._refloat_halflife / self.seconds_in_hour
 
-    @refloat_halflife.setter
-    def refloat_halflife(self, value):
-        self._refloat_halflife = value * self.seconds_in_hour
+    # @refloat_halflife.setter
+    # def refloat_halflife(self, value):
+    #     self._refloat_halflife = value * self.seconds_in_hour
 
     @property
     def approximate_raster_interval(self):
@@ -1020,33 +1042,24 @@ class RasterMap(GnomeMap):
         last_water_positions[beached, :2] = \
             self.projection.to_lonlat(last_water_pos_pixel[beached, :2])
 
+        # zero half-life will not stick at all.
+        # so put the back to last water position right away.
+        if self.refloat_halflife == 0.0:
+            # set the beached elements to the last water position
+            next_pos[beached, :2] = last_water_positions[beached, :2]
+            # set them back to in_water
+            status_codes[beached] = oil_status.in_water
+
         self._set_off_map_status(sc)
 
-        # todo: need a prepare_for_model_run() so map adds these keys to
-        #     mass_balance as opposed to SpillContainer
-        # update 'off_maps'/'beached' in mass_balance
-        sc.mass_balance['beached'] = \
-            sc['mass'][sc['status_codes'] == oil_status.on_land].sum()
-        sc.mass_balance['off_maps'] += \
-            sc['mass'][sc['status_codes'] == oil_status.off_maps].sum()
-        
-        # BH added to refloat immediately if relfoat_halflife == 0
-        # if self._refloat_halflife == 0.0:
-        #     r_idx = np.where(sc['status_codes'] == oil_status.on_land)[0]
-
-        #     if r_idx.size == 0:  # no particles on land
-        #         return
-            
-        #     if r_idx.size > 0:
-        #         # check is not required, but why do this operation if no particles
-        #         # need to be refloated
-        #         #sc['positions'][r_idx] = sc['last_water_positions'][r_idx]
-        #         #sc['status_codes'][r_idx] = oil_status.in_water
-        #         sc['positions'][r_idx] = start_pos[r_idx]
-        #         sc['last_water_positions'][r_idx] = last_water_positions[r_idx]
-        #         sc['next_positions'][r_idx] = last_water_positions[r_idx]
-        #         sc['status_codes'][r_idx] = oil_status.in_water
-                
+        # # todo: need a prepare_for_model_run() so map adds these keys to
+        # #     mass_balance as opposed to SpillContainer
+        # # update 'off_maps'/'beached' in mass_balance
+        # this is done in _set_off_map_status
+        # sc.mass_balance['beached'] = \
+        #     sc['mass'][sc['status_codes'] == oil_status.on_land].sum()
+        # sc.mass_balance['off_maps'] += \
+        #     sc['mass'][sc['status_codes'] == oil_status.off_maps].sum()
 
     def refloat_elements(self, spill_container, time_step, model_time=None):
         """
@@ -1132,16 +1145,18 @@ class RasterMap(GnomeMap):
         return self.projection.to_pixel(coords)
 
 
+# Fixme -- use utilities.convert_longitude
+
 def ShiftLon360(points):
     try:
-        points[points[:,0]<0,0] = points[:,0]+360
+        points[points[:,0] < 0, 0] = points[:, 0] + 360
     except ValueError:
         pass
     return points
 
 def ShiftLon180(points):
     try:
-        points[points[:,0]>180,0] = points[:,0]-360
+        points[points[:,0] > 180, 0] = points[:, 0] - 360
     except ValueError:
         pass
     return points
@@ -1159,6 +1174,7 @@ class MapFromBNA(RasterMap):
                  raster_size=12288 *  12288, # BH replaced with 144 MB - 4096 * 4096,
                  map_bounds=None,
                  spillable_area=None,
+                 land_polys=None,
                  shift_lons=0,
                  **kwargs):
         """
@@ -1179,7 +1195,9 @@ class MapFromBNA(RasterMap):
                           180, or 360 are valid inputs
         :type shiftLons: integer
 
-        Optional arguments (kwargs):
+        :param shift_lons=0: Whether to shift the longitude reference frame:
+                           Accepted values:
+                           0: do nothing. 180: shift to -180--180. 360: shift to 0--360
 
         :param refloat_halflife: the half-life (in hours) for the re-floating.
 
@@ -1187,6 +1205,8 @@ class MapFromBNA(RasterMap):
                            smaller than the land raster
 
         :param spillable_area: The polygon bounding the spillable_area
+
+        Optional arguments (kwargs):
 
         :param id: unique ID of the object. Using UUID as a string.
                    This is only used when loading object from save file.
@@ -1210,7 +1230,7 @@ class MapFromBNA(RasterMap):
         land_polys = PolygonSet()  # and lakes....
         spillable_area_bna = PolygonSet()
 
-        #add if based on input param
+        # add if based on input param
         tf = ShiftLon360 if shift_lons == 360 else ShiftLon180 if shift_lons == 180 else None
         if tf is not None:
             polygons.TransformData(tf)
@@ -1259,7 +1279,7 @@ class MapFromBNA(RasterMap):
         # get the raster as a numpy array:
         raster, projection = self.build_raster(land_polys, BB)
 
-        super(MapFromBNA, self).__init__(
+        super().__init__(
             raster=raster,
             projection=projection,
             map_bounds=map_bounds,
@@ -1301,7 +1321,6 @@ class MapFromBNA(RasterMap):
 
         # draw the land to the background
         for poly in land_polys:
-            # fixme -- this should be something like "land"
             if poly.metadata[2] == '1':
                 canvas.draw_polygon(poly,
                                     line_color='land',
@@ -1348,7 +1367,7 @@ class MapFromBNA(RasterMap):
         object -- keeping the door open to that data coming from something
         other than a bna file.
 
-        FIXME: Technically, geojson recommends ccw polygons -- but putting that
+        FIXME: Technically, geojson recommends ccw polygons -- but putting that \
                check in was pretty slow, so it's commented out.
 
         FIXME: This really should export the map_bounds and spillable_area
@@ -1393,6 +1412,8 @@ class MapFromBNA(RasterMap):
 class MapFromUGrid(RasterMap):
     """
     A raster land-water map, created from netcdf File of a UGrid
+
+    NOTE: not complete or well tested
     """
     _schema = MapFromUGridSchema
 

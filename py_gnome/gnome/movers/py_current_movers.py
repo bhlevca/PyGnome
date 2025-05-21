@@ -11,13 +11,14 @@ from gnome.basic_types import oil_status
 #                                status_code_type)
 
 from gnome.utilities.projections import FlatEarthProjection
+from gnome.utilities.time_utils import TZOffset
+
 
 from gnome.environment import GridCurrent
 from gnome.environment.gridded_objects_base import Grid_U, VectorVariableSchema
 
 from gnome.movers.movers import TimeRangeSchema, PyMoverSchema
 
-from gnome.persist.validators import convertible_to_seconds
 from gnome.persist.extend_colander import LocalDateTime, FilenameSchema
 from gnome.persist.base_schema import GeneralGnomeObjectSchema
 
@@ -31,14 +32,6 @@ class CurrentMoverSchema(PyMoverSchema):
                                        acceptable_schemas=[VectorVariableSchema,
                                                            GridCurrent._schema]
                                        )
-    scale_value = SchemaNode(Float(), save=True, update=True,
-                               missing=drop)
-    data_start = SchemaNode(LocalDateTime(), read_only=True,
-                            validator=convertible_to_seconds)
-    data_stop = SchemaNode(LocalDateTime(), read_only=True,
-                           validator=convertible_to_seconds)
-    uncertain_duration = SchemaNode(Float())
-    uncertain_time_delay = SchemaNode(Float())
     uncertain_along = SchemaNode(
         Float(), missing=drop, save=True, update=True
     )
@@ -60,7 +53,6 @@ class CurrentMover(movers.PyMover):
 
     def __init__(self,
                  current=None,
-                 time_offset=0,
                  scale_value=1,
                  uncertain_duration= 24 * 3600,
                  uncertain_time_delay=0,
@@ -83,19 +75,16 @@ class CurrentMover(movers.PyMover):
         :type active_range: 2-tuple of datetimes
 
         :param scale_value: Value to scale current data
-        :param uncertain_duration: how often does a given uncertain element
-                                   get reset
-        :param uncertain_time_delay: when does the uncertainly kick in.
+        :param uncertain_duration: (seconds) how often a given uncertain element
+                                   gets reset in seconds
+        :param uncertain_time_delay: when the uncertainty kicks in in seconds from model start
         :param uncertain_cross: Scale for uncertainty perpendicular to the flow
         :param uncertain_along: Scale for uncertainty parallel to the flow
-        :param time_offset: Time zone shift if data is in GMT
         :param default_num_method: Numerical method for calculating movement delta.
                                    Choices:('Euler', 'RK2', 'RK4')
                                    Default: RK2
         """
 
-        (super(CurrentMover, self).__init__(default_num_method=default_num_method,
-                                              **kwargs))
         self.filename = filename
         self.current = current
 
@@ -103,11 +92,11 @@ class CurrentMover(movers.PyMover):
         if self.current is None:
             raise ValueError("Must provide a current object")
         if isinstance(self.current, (str, os.PathLike)):
-            warnings.warn("The behavior of providing a filename to a CurrentMover __init__ is deprecated. Please pass a current or use a helper function", DeprecationWarning)
+            warnings.warn("The behavior of providing a filename to a CurrentMover "
+                          "__init__ is deprecated. Please pass a current or use a "
+                          "helper function", DeprecationWarning)
             self.current = GridCurrent.from_netCDF(filename=self.current,
                                                  **kwargs)
-        if filename is not None:
-            warnings.warn("The behavior of providing a filename to a CurrentMover __init__ is deprecated. Please pass a current or use a helper function", DeprecationWarning)
 
         self.scale_value = scale_value
 
@@ -124,31 +113,32 @@ class CurrentMover(movers.PyMover):
         self.is_first_step = False
         self.time_uncertainty_was_set = 0
         self.shape = (2,)
-        self.uncertainty_list = np.zeros((0,)+self.shape, dtype=np.float64)
+        self._uncertainty_list = np.zeros((0,)+self.shape, dtype=np.float64)
+        
+        (super(CurrentMover, self).__init__(default_num_method=default_num_method, **kwargs))
 
+    #fixme: we have the defaults on the from_netCDF init -- they should be lower down!
     @classmethod
     def from_netCDF(cls,
                     filename=None,
                     name=None,
-                    time_offset=0,
                     scale_value=1,
                     uncertain_duration=24 * 3600,
                     uncertain_time_delay=0,
                     uncertain_along=.5,
-                    #uncertain_across=.25,
                     uncertain_cross=.25,
                     **kwargs):
         """
-        Function for specifically creating a CurrentMover from a file
+        Function for creating a CurrentMover from a file
         """
-        warnings.warn("CurrentMover.from_netCDF is deprecated. Please create the current separately or use a helper function", DeprecationWarning)
         current = GridCurrent.from_netCDF(filename, **kwargs)
 
         return cls(name=name,
                    current=current,
                    filename=filename,
-                   time_offset=time_offset,
                    scale_value=scale_value,
+                   uncertain_duration=uncertain_duration,
+                   uncertain_time_delay=uncertain_time_delay,
                    uncertain_along=uncertain_along,
                    #uncertain_across=uncertain_across,
                    uncertain_cross=uncertain_cross,
@@ -182,7 +172,7 @@ class CurrentMover(movers.PyMover):
             This function exists because it is part of the top level Mover API
         '''
         if hasattr(self.current, 'get_bounds'):
-            return self.current.get_bounds
+            return self.current.get_bounds()
         else:
             return super(CurrentMover, self).get_bounds()
 
@@ -205,7 +195,6 @@ class CurrentMover(movers.PyMover):
         """
         positions = sc['positions']
 
-
         if self.active and len(positions) > 0:
             status = sc['status_codes'] != oil_status.in_water
             pos = positions[:]
@@ -222,10 +211,13 @@ class CurrentMover(movers.PyMover):
                 deltas = res
 
             deltas *= self.scale_value
-            deltas = FlatEarthProjection.meters_to_lonlat(deltas, positions)
 
+            # deltas in meters:
             if sc.uncertain:
-                deltas = self.add_uncertainty(deltas)
+                deltas = self._add_uncertainty(deltas)
+
+            # convert deltas to lon-lat
+            deltas = FlatEarthProjection.meters_to_lonlat(deltas, positions)
 
             deltas[status] = (0, 0, 0)
         else:
@@ -234,7 +226,7 @@ class CurrentMover(movers.PyMover):
         return deltas
 
 
-    def update_uncertainty(self, num_les, elapsed_time):
+    def _update_uncertainty(self, num_les, elapsed_time):
         """
         update uncertainty
 
@@ -248,99 +240,104 @@ class CurrentMover(movers.PyMover):
 
         if not add_uncertainty:
             #I'm not sure if we have to do anything here # we will not be adding uncertainty
-            #self.uncertainty_list = np.zeros((0,)+self.shape, dtype=np.float64)
+            #self._uncertainty_list = np.zeros((0,)+self.shape, dtype=np.float64)
             #self.time_uncertainty_was_set = 0
             return
 
-        uncertain_list_size = len(self.uncertainty_list)
+        uncertain_list_size = len(self._uncertainty_list)
 
-        if uncertain_list_size==0:
+        if uncertain_list_size == 0:
             need_to_reinit = True
 
         if elapsed_time < self.time_uncertainty_was_set:
             need_to_reinit = True
 
-        if num_les>uncertain_list_size:
+        if num_les > uncertain_list_size:
             need_to_reallocate = True
 
-        if num_les<uncertain_list_size: # this shouldn't happen unless a reset was missed
+        if num_les < uncertain_list_size:  # this shouldn't happen unless a reset was missed
             need_to_reinit = True
 
-        if need_to_reallocate and uncertain_list_size!=0:
-            a_append = np.zeros((num_les-uncertain_list_size,)+self.shape,dtype=np.float64)
-            a_append[:,0] = np.random.uniform(-self.uncertain_along, self.uncertain_along, size=(num_les-uncertain_list_size,))
-            a_append[:,1] = np.random.uniform(-self.uncertain_cross, self.uncertain_cross, size=(num_les-uncertain_list_size,))
-            self.uncertainty_list = np.r_[self.uncertainty_list, a_append]
+        if need_to_reallocate and uncertain_list_size != 0:
+            a_append = np.zeros((num_les - uncertain_list_size, ) + self.shape,
+                                dtype=np.float64)
+            a_append[:, 0] = np.random.uniform(-self.uncertain_along,
+                                               self.uncertain_along,
+                                               size=(num_les - uncertain_list_size, ))
+            a_append[:, 1] = np.random.uniform(-self.uncertain_cross,
+                                               self.uncertain_cross,
+                                               size=(num_les - uncertain_list_size, ))
+            self._uncertainty_list = np.r_[self._uncertainty_list, a_append]
 #             for i in range(uncertain_list_size,num_les):
-#                 self.uncertainty_list[i:,0] = np.random.uniform(-self.uncertain_along, self.uncertain_along)
-#                 self.uncertainty_list[i:,1] = np.random.uniform(-self.uncertain_cross, self.uncertain_cross)
+#                 self._uncertainty_list[i:,0] = np.random.uniform(-self.uncertain_along, self.uncertain_along)
+#                 self._uncertainty_list[i:,1] = np.random.uniform(-self.uncertain_cross, self.uncertain_cross)
 
         if need_to_reinit:
-            self.allocate_uncertainty(num_les)
-            self.update_uncertainty_values(elapsed_time)
+            self._allocate_uncertainty(num_les)
+            self._update_uncertainty_values(elapsed_time)
         elif elapsed_time >= self.time_uncertainty_was_set + self.uncertain_duration:
-            self.update_uncertainty_values(elapsed_time)
+            self._update_uncertainty_values(elapsed_time)
 
         return
 
 
-    def update_uncertainty_values(self, elapsed_time):
+    def _update_uncertainty_values(self, elapsed_time):
         """
         update uncertainty values
 
         :param elapsed_time: time in seconds since model run started
         """
         self.time_uncertainty_was_set = elapsed_time
-        num_les = len(self.uncertainty_list)
+        num_les = len(self._uncertainty_list)
         if num_les==0:
             return
 
-        self.uncertainty_list[:,0] = np.random.uniform(-self.uncertain_along, self.uncertain_along, size=(num_les,))
-        self.uncertainty_list[:,1] = np.random.uniform(-self.uncertain_cross, self.uncertain_cross, size=(num_les,))
+        self._uncertainty_list[:,0] = np.random.uniform(-self.uncertain_along, self.uncertain_along, size=(num_les,))
+        self._uncertainty_list[:,1] = np.random.uniform(-self.uncertain_cross, self.uncertain_cross, size=(num_les,))
 
 
-    def allocate_uncertainty(self, num_les):
+    def _allocate_uncertainty(self, num_les):
         """
         add uncertainty
 
         :param num_les: the number of les released so far
         """
         shape = (2,)
-        self.uncertainty_list = np.zeros((num_les,)+shape, dtype=np.float64)
+        self._uncertainty_list = np.zeros((num_les, ) + shape, dtype=np.float64)
 
         return
 
 
-    def add_uncertainty(self, deltas):
+    def _add_uncertainty(self, deltas):
         """
         add uncertainty
 
         :param deltas: the movement for the current time step
         """
-        if self.uncertainty_list is None:
-            return deltas # this is our clue to not add uncertainty
+        if self._uncertainty_list is None or len(self._uncertainty_list)==0:
+            return deltas  # this is our clue to not add uncertainty
 
-        if len(self.uncertainty_list)>0:
-            #make a copy of deltas
-            new_deltas=deltas.copy()
-            unrec=self.uncertainty_list
-            u = new_deltas[:,0]
-            v = new_deltas[:,1]
-            lengthS = np.sqrt(u*u + v*v)
+        if len(self._uncertainty_list) > 0:
+            # make a copy of deltas
+            new_deltas = deltas.copy()
+            unrec = self._uncertainty_list
+            u = new_deltas[:, 0]
+            v = new_deltas[:, 1]
+            lengthS = np.hypot(u, v)
 
             #alpha = unrec.downStream
             #beta = unrec.crossStream
-            alpha = unrec[:,0]	#downstream
-            beta = unrec[:,1]	#crossstream
+            alpha = unrec[:, 0]  # downstream
+            beta = unrec[:, 1]  # crossstream
 
             # Gnome had a minimum value case for lengthS - uncertMinimumInMPS
-            deltas[:,0] = u*(1+alpha)+v*beta
-            deltas[:,1] = v*(1+alpha)-u*beta
+            new_deltas[:, 0] = u * (1 + alpha) + v * beta
+            new_deltas[:, 1] = v * (1 + alpha) - u * beta
 
         else:
-            raise ValueError("something wrong with uncertainty")
+            raise ValueError("Something wrong with uncertainty: there are no uncertainty values to use")
 
-        return deltas
+        return new_deltas
 
 
     def prepare_for_model_run(self):
@@ -348,7 +345,7 @@ class CurrentMover(movers.PyMover):
         reset uncertainty
         """
         self.is_first_step = True
-        self.uncertainty_list = np.zeros((0,)+self.shape, dtype=np.float64)
+        self._uncertainty_list = np.zeros((0,)+self.shape, dtype=np.float64)
         self.time_uncertainty_was_set = 0
 
         return
@@ -356,6 +353,11 @@ class CurrentMover(movers.PyMover):
     def prepare_for_model_step(self, sc, time_step, model_time_datetime):
         """
         add uncertainty
+
+        :param sc: an instance of gnome.spill_container.SpillContainer class
+        :param int time_step: the model time step in seconds
+        :param model_time_datetime: the current model time as a datetime object
+
         """
         super(CurrentMover, self).prepare_for_model_step(sc, time_step,
                                                            model_time_datetime)
@@ -368,14 +370,17 @@ class CurrentMover(movers.PyMover):
             self.model_start_time = seconds	#check units on this
 
         if sc.uncertain:
-            elapsed_time = seconds - self.model_start_time
-            self.update_uncertainty(sc.num_released, elapsed_time)
+            elapsed_time = abs(seconds - self.model_start_time)
+            self._update_uncertainty(sc.num_released, elapsed_time)
 
         return
 
     def model_step_is_done(self, sc):
         """
         remove any off map les
+
+        :param sc: an instance of gnome.spill_container.SpillContainer class
+
         """
         if not self.active or not self.on:
             return
@@ -387,9 +392,9 @@ class CurrentMover(movers.PyMover):
                                      oil_status.to_be_removed)[0]
 
             if len(to_be_removed) > 0:
-                new_uncertainty = np.copy(self.uncertainty_list)
-                #self.uncertainty_list = np.delete(self.uncertainty_list, to_be_removed, axis=0)
-                self.uncertainty_list = np.delete(new_uncertainty, to_be_removed, axis=0)
+                new_uncertainty = np.copy(self._uncertainty_list)
+                #self._uncertainty_list = np.delete(self._uncertainty_list, to_be_removed, axis=0)
+                self._uncertainty_list = np.delete(new_uncertainty, to_be_removed, axis=0)
 PyCurrentMover = CurrentMover
 
 def grid_current_mover(filename, current_kwargs=None, *args, **kwargs):

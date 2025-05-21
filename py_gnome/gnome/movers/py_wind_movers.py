@@ -17,15 +17,16 @@ from gnome.array_types import gat
 
 from gnome.utilities import rand
 from gnome.utilities.projections import FlatEarthProjection
+from gnome.utilities.time_utils import TZOffset
 
 from gnome.environment import GridWind
 
 from gnome.movers.movers import TimeRangeSchema, PyMoverSchema
 
-from gnome.persist.validators import convertible_to_seconds
 from gnome.persist.extend_colander import LocalDateTime, FilenameSchema
 from gnome.persist.base_schema import GeneralGnomeObjectSchema
 from gnome.environment.gridded_objects_base import Grid_U, VectorVariableSchema
+from gnome.environment.wind import Wind
 
 
 class WindMoverSchema(PyMoverSchema):
@@ -35,15 +36,8 @@ class WindMoverSchema(PyMoverSchema):
     wind = GeneralGnomeObjectSchema(save=True, update=True,
                                     save_reference=True,
                                     acceptable_schemas=[VectorVariableSchema,
-                                                        GridWind._schema])
-    scale_value = SchemaNode(Float(), save=True, update=True, missing=drop)
-    #time_offset = SchemaNode(Float(), save=True, update=True, missing=drop)
-    data_start = SchemaNode(LocalDateTime(), read_only=True,
-                            validator=convertible_to_seconds)
-    data_stop = SchemaNode(LocalDateTime(), read_only=True,
-                           validator=convertible_to_seconds)
-    uncertain_duration = SchemaNode(Float())
-    uncertain_time_delay = SchemaNode(Float())
+                                                        GridWind._schema,
+                                                        Wind._schema])
     uncertain_speed_scale = SchemaNode(
         Float(), missing=drop, save=True, update=True
     )
@@ -65,7 +59,6 @@ class WindMover(movers.PyMover):
 
     def __init__(self,
                  wind=None,
-                 time_offset=0,
                  uncertain_duration=3.* 3600,
                  uncertain_time_delay=0,
                  uncertain_speed_scale=2.,
@@ -76,8 +69,8 @@ class WindMover(movers.PyMover):
                  **kwargs):
         """
         Initialize a WindMover
-        :param wind: Environment object representing wind to be
-                        used.
+
+        :param wind: Environment object representing wind to be used.
         :type wind: Any Wind or Wind-like that implements the .at() function
 
         :param active_range: Range of datetimes for when the mover should be
@@ -85,19 +78,16 @@ class WindMover(movers.PyMover):
         :type active_range: 2-tuple of datetimes
 
         :param scale_value: Value to scale wind data
-        :param uncertain_duration: how often does a given uncertain element
-                                   get reset
-        :param uncertain_time_delay: when does the uncertainly kick in.
+        :param uncertain_duration: (seconds) how often a given uncertain element
+                                   gets reset
+        :param uncertain_time_delay: when the uncertainty kicks in in seconds from model start.
         :param uncertain_speed_scale: Scale for uncertainty of wind speed
         :param uncertain_angle_scale: Scale for uncertainty of wind angle
-        :param time_offset: Time zone shift if data is in GMT
         :param num_method: Numerical method for calculating movement delta.
                            Choices:('Euler', 'RK2', 'RK4')
                            Default: RK2
 
         """
-
-        (super(WindMover, self).__init__(default_num_method=default_num_method, **kwargs))
         self.wind = wind
         self.make_default_refs = False
 
@@ -108,9 +98,6 @@ class WindMover(movers.PyMover):
                           "Please pass a wind or use a helper function", DeprecationWarning)
             self.wind = GridWind.from_netCDF(filename=self.wind,
                                                  **kwargs)
-        if filename is not None:
-            warnings.warn("The behavior of providing a filename to a WindMover __init__ is deprecated. "
-                          "Please pass a wind or use a helper function", DeprecationWarning)
 
         self.uncertain_duration = uncertain_duration
         self.uncertain_time_delay = uncertain_time_delay
@@ -119,7 +106,6 @@ class WindMover(movers.PyMover):
         self.uncertain_diffusion = 0
 
         self.scale_value = scale_value
-        #self.time_offset = time_offset
 
         self.sigma_theta = 0
         self.sigma2 = 0
@@ -128,6 +114,7 @@ class WindMover(movers.PyMover):
         self.shape = (2,)
         self.uncertainty_list = np.zeros((0,)+self.shape, dtype=np.float64)
 
+        (super(WindMover, self).__init__(default_num_method=default_num_method, **kwargs))
         self.array_types.update({'windages': gat('windages'),
                                  'windage_range': gat('windage_range'),
                                  'windage_persist': gat('windage_persist')})
@@ -135,7 +122,6 @@ class WindMover(movers.PyMover):
     @classmethod
     def from_netCDF(cls,
                     filename=None,
-                    time_offset=0,
                     scale_value=1,
                     uncertain_duration=3 * 3600,
                     uncertain_time_delay=0,
@@ -143,14 +129,11 @@ class WindMover(movers.PyMover):
                     uncertain_angle_scale=.4,
                     default_num_method='RK2',
                     **kwargs):
-        warnings.warn("WindMover.from_netCDF is deprecated. "
-                      "Please create the wind separately or use a helper function", DeprecationWarning)
 
         wind = GridWind.from_netCDF(filename, **kwargs)
 
         return cls(wind=wind,
                    filename=filename,
-                   time_offset=time_offset,
                    scale_value=scale_value,
                    uncertain_speed_scale=uncertain_speed_scale,
                    uncertain_angle_scale=uncertain_angle_scale,
@@ -163,13 +146,13 @@ class WindMover(movers.PyMover):
     @property
     def data_stop(self):
         return self.wind.data_stop
-
+        
     def prepare_for_model_run(self):
         """
         reset uncertainty
         """
         self.is_first_step = True
-        self.uncertainty_list = np.zeros((0,)+self.shape, dtype=np.float64)
+        self.uncertainty_list = np.zeros((0,) + self.shape, dtype=np.float64)
         self.time_uncertainty_was_set = 0
 
         return
@@ -186,33 +169,36 @@ class WindMover(movers.PyMover):
         super(WindMover, self).prepare_for_model_step(sc, time_step,
                                                         model_time_datetime)
 
-        # if no particles released, then no need for windage
-        # TODO: revisit this since sc.num_released shouldn't be None
-        if sc.num_released is None or sc.num_released == 0:
-            return
-
         if self.active:
+            seconds = self.datetime_to_seconds(model_time_datetime)
+            if self.is_first_step:
+                self.model_start_time = seconds
+
+            # if no particles released, then no need for windage
+            # TODO: revisit this since sc.num_released shouldn't be None
+            if sc.num_released is None or sc.num_released == 0:
+                return
+
             rand.random_with_persistance(sc['windage_range'][:, 0],
                                     sc['windage_range'][:, 1],
                                     sc['windages'],
                                     sc['windage_persist'],
                                     time_step)
 
-            seconds = self.datetime_to_seconds(model_time_datetime)
-            if self.is_first_step:
-                self.model_start_time = seconds	#check units on this
-
             if sc.uncertain:
-                elapsed_time = seconds - self.model_start_time
+                elapsed_time = abs(seconds - self.model_start_time)
                 eddy_diffusion = 1000000.	#this is fixed, should it be an input?
                 self.update_uncertainty(sc.num_released, elapsed_time)
-                self.uncertain_diffusion = np.sqrt(6 * (eddy_diffusion / 10000.) / time_step)
+                self.uncertain_diffusion = np.sqrt(6 * (eddy_diffusion / 10000.) / abs(time_step))
 
         return
 
     def model_step_is_done(self, sc):
         """
         remove any off map les
+
+        :param sc: an instance of gnome.spill_container.SpillContainer class
+
         """
         if not self.active or not self.on:
             return
@@ -233,7 +219,7 @@ class WindMover(movers.PyMover):
             This function exists because it is part of the top level Mover API
         '''
         if hasattr(self.wind, 'get_bounds'):
-            return self.wind.get_bounds
+            return self.wind.get_bounds()
         else:
             return super(WindMover, self).get_bounds()
 
@@ -277,12 +263,22 @@ class WindMover(movers.PyMover):
             cos_arg = 2. * np.pi * np.random.uniform(0,1, size=(num_les-uncertain_list_size,))
             srt = np.sqrt(-2. * np.log(np.random.uniform(0.001,.999, size=(num_les-uncertain_list_size,))))
             # need a loop to check TermsLessThanMax fabs(self.sigma_theta * sinTerm/rndv2) <= angleMax (60)
-            for i in range(num_les-uncertain_list_size):
+#             for i in range(num_les-uncertain_list_size):
+#                 for j in range(10):
+#                     if np.abs(self.sigma_theta * srt[i] * np.sin(cos_arg[i])) <= 60.:
+#                         break
+#                     cos_arg[i] = 2. * np.pi * np.random.uniform(0,1)
+#                     srt[i] = np.sqrt(-2. * np.log(np.random.uniform(0.001,.999)))
+#
+            bad_values = np.flatnonzero(np.abs(self.sigma_theta * srt * np.sin(cos_arg)) > 60.)
+            for i in bad_values:
                 for j in range(10):
-                    if np.abs(self.sigma_theta * srt[i] * np.sin(cos_arg[i])) <= 60.:
+                    c = 2. * np.pi * np.random.uniform(0, 1)
+                    s = np.sqrt(-2. * np.log(np.random.uniform(0.001, .999)))
+                    if np.abs(self.sigma_theta * s * np.sin(c)) <= 60.:
+                        cos_arg[i] = c
+                        srt[i] = s
                         break
-                        cos_arg[i] = 2. * np.pi * np.random.uniform(0,1)
-                        srt[i] = np.sqrt(-2. * np.log(np.random.uniform(0.001,.999)))
 
             a_append[:,0] = srt * np.cos(cos_arg) #cos term
             a_append[:,1] = srt * np.sin(cos_arg) #sin term
@@ -320,16 +316,30 @@ class WindMover(movers.PyMover):
         cos_arg = 2. * np.pi * np.random.uniform(0,1, size=(num_les,))
         srt = np.sqrt(-2. * np.log(np.random.uniform(0.001,.999, size=(num_les,))))
         # need a loop to check TermsLessThanMax: fabs(self.sigma_theta * sinTerm/rndv2) <= angleMax (60)
-        for i in range(0,num_les):
+#         for i in range(0,num_les):
+#             for j in range(10):
+#                 if np.abs(self.sigma_theta * srt[i] * np.sin(cos_arg[i])) <= 60.:
+#                     print("values clean",i,j)
+#                     break
+#                 cos_arg[i] = 2. * np.pi * np.random.uniform(0,1)
+#                 srt[i] = np.sqrt(-2. * np.log(np.random.uniform(0.001,.999)))
+#
+#             #self.uncertainty_list[i,0] = srt * np.cos(cos_arg[i]) #cos term
+#             #self.uncertainty_list[i,1] = srt * np.sin(cos_arg[i]) #sin term
+#         self.uncertainty_list[:,0] = srt * np.cos(cos_arg) #cos term
+#         self.uncertainty_list[:,1] = srt * np.sin(cos_arg) #sin term
+        bad_values = np.flatnonzero(np.abs(self.sigma_theta * srt * np.sin(cos_arg)) > 60.)
+        for i in bad_values:
             for j in range(10):
-                if np.abs(self.sigma_theta * srt[i] * np.sin(cos_arg[i])) <= 60.:
+                c = 2. * np.pi * np.random.uniform(0, 1)
+                s = np.sqrt(-2. * np.log(np.random.uniform(0.001, .999)))
+                if np.abs(self.sigma_theta * s * np.sin(c)) <= 60.:
+                    cos_arg[i] = c
+                    srt[i] = s
                     break
-                    cos_arg[i] = 2. * np.pi * np.random.uniform(0,1)
-                    srt[i] = np.sqrt(-2. * np.log(np.random.uniform(0.001,.999)))
 
         self.uncertainty_list[:,0] = srt * np.cos(cos_arg) #cos term
         self.uncertainty_list[:,1] = srt * np.sin(cos_arg) #sin term
-
 
     def allocate_uncertainty(self, num_les):
         """
@@ -349,7 +359,7 @@ class WindMover(movers.PyMover):
 
         :param deltas: the movement for the current time step
         """
-        if self.uncertainty_list is None:
+        if self.uncertainty_list is None or len(self.uncertainty_list)==0:
             return deltas # this is our clue to not add uncertainty
 
         num_les = len(self.uncertainty_list)
