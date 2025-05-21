@@ -355,7 +355,7 @@ cpp_files = ['RectGridVeL_c.cpp',
              ]
 
 
-cpp_code_dir = os.path.join('..', 'lib_gnome')
+cpp_code_dir = os.path.join('.', 'lib_gnome')
 cpp_files = [os.path.join(cpp_code_dir, f) for f in cpp_files]
 
 
