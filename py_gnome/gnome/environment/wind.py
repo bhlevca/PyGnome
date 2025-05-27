@@ -229,7 +229,7 @@ class Wind(Timeseries, Environment):
 
             # create an empty default object
             super(Wind, self).__init__(coord_sys=coord_sys, **kwargs)
-
+            
             self.units = 'mps'  # units for default object
 
             if timeseries is not None:

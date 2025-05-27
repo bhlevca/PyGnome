@@ -33,7 +33,8 @@ def to_time_value_pair(datetime_value, in_ts_format=None):
     # convert datetime_value_2d to time_value_pair
     time_value_pair = np.zeros((len(datetime_value), ),
                                dtype=basic_types.time_value_pair)
-    time_value_pair['time'] = time_utils.date_to_sec(datetime_value['time'])
+    time_value_pair['time'] = time_utils.date_to_sec(datetime_value['time']).astype(np.int64)
+
 
     if datetime_value.dtype == basic_types.datetime_value_1d:
         time_value_pair['value']['u'] = datetime_value['value'][:]

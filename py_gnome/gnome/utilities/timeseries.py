@@ -99,7 +99,7 @@ class Timeseries(GnomeId):
 
             datetime_value_2d = self._xform_input_timeseries(timeseries)
             time_value_pair = to_time_value_pair(datetime_value_2d, coord_sys)
-
+            
             self.ossm = CyTimeseries(timeseries=time_value_pair)
         else:
             ts_format = tsformat(coord_sys)
