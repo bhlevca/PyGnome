@@ -1160,6 +1160,7 @@ class Model(GnomeId):
         for outputter in self.outputters:
             #set the concentration location
             outputter.VolumetricConcentrationPOI = self.concentration
+            # print(f"Set VolumetricConcentrationPOI: {self.concentration.xy}") #BH - remove
             if self.current_time_step == self.num_time_steps - 1:
                 output = outputter.write_output(self.current_time_step, islast_step=True)
             else:

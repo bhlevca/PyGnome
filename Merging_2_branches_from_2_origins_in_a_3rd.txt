@@ -1,0 +1,105 @@
+Got it! You want to merge a branch from the original repository into a branch from your forked repository and then create a new branch in your forked repository to hold the merged result. Here’s how you can do it:
+
+1. **Clone Your Forked Repository:**
+   ```bash
+   git clone <URL-of-your-forked-repo>
+   cd <your-forked-repo>
+   ```
+
+2. **Add the Original Repository as a Remote:**
+   ```bash
+   git remote add upstream <URL-of-original-repo>
+   ```
+
+3. **Fetch the Specific Branch from the Original Repository:**
+   ```bash
+   git fetch upstream <specific-branch-name>
+   ```
+
+4. **Check Out the Existing Branch in Your Forked Repository:**
+   ```bash
+   git checkout <existing-branch-in-your-fork>
+   ```
+
+5. **Create a New Branch in Your Forked Repository:**
+   ```bash
+   git checkout -b <new-branch-name>
+   ```
+
+6. **Merge the Specific Branch from the Original Repository into the New Branch:**
+   ```bash
+   git merge upstream/<specific-branch-name>
+   ```
+
+7. **Resolve Any Merge Conflicts:**
+   If there are any conflicts, resolve them and then:
+   ```bash
+   git add <resolved-files>
+   ```
+
+8. **Commit the Merge:**
+   ```bash
+   git commit -m "Merge <specific-branch-name> from upstream into <new-branch-name>"
+   ```
+
+9. **Push the New Branch to Your Forked Repository:**
+   ```bash
+   git push origin <new-branch-name>
+   ```
+
+Here is a step-by-step example:
+
+1. **Clone Your Forked Repository:**
+   ```bash
+   git clone https://github.com/your-username/your-forked-repo.git
+   cd your-forked-repo
+   ```
+
+2. **Add the Original Repository as a Remote:**
+   ```bash
+   git remote add upstream https://github.com/original-username/original-repo.git
+   ```
+
+3. **Fetch the Specific Branch from the Original Repository:**
+   ```bash
+   git fetch upstream feature-branch
+   ```
+
+4. **Check Out the Existing Branch in Your Forked Repository:**
+   ```bash
+   git checkout existing-branch-in-fork
+   ```
+
+5. **Create a New Branch in Your Forked Repository:**
+   ```bash
+   git checkout -b new-merged-branch
+   ```
+
+6. **Merge the Specific Branch from the Original Repository into the New Branch:**
+   ```bash
+   git merge upstream/feature-branch
+   ```
+
+7. **Resolve Any Merge Conflicts:**
+   If there are conflicts, resolve them and then:
+   ```bash
+   git add <resolved-files>
+   ```
+
+8. **Commit the Merge:**
+   ```bash
+   git commit -m "Merge feature-branch from upstream into new-merged-branch"
+   ```
+
+9. **Push the New Branch to Your Forked Repository:**
+   ```bash
+   git push origin new-merged-branch
+   ```
+
+This process ensures that you create a new branch in your forked repository and merge the specific branch from the original repository into this new branch, without affecting the existing branch in your forked repository.
+
+
+** delete a branch: "git branch -d <branchname>"
+** delete a remote branch: "git push origin --delete <branchname>"
+** list all branches: "git branch" or "git branch -a" for both local and remote
+

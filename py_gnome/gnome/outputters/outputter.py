@@ -32,6 +32,9 @@ from gnome.concentration.dfsu_water_depth import DfsuWaterDepth
 from gnome.concentration.concentration_location import ConcentrationLocation, ConcentrationLocationSchema
 from gnome.gnomeobject import GnomeId
 
+# added for rolling volumetric concentration
+from collections import deque
+import numpy as np
 
 class BaseOutputterSchema(ObjTypeSchema):
     'Base schema for all outputters - they all contain the following'
@@ -166,6 +169,9 @@ class Outputter(GnomeId):
 
         # reset internally used variables
         self.rewind()
+        
+        # For rolling windows 
+        self._vc_rolling_buffer = deque(maxlen=5)
 
     @property
     def output_timestep(self):
@@ -394,7 +400,28 @@ class Outputter(GnomeId):
                 pass
             else:
                 compute_surface_concentration(sc, self.surface_conc)
-                compute_volumetric_concentration(sc,self.DfsuWaterDepth, self.VolumetricConcentrationPOI)
+                #compute_volumetric_concentration(sc,self.DfsuWaterDepth, self.VolumetricConcentrationPOI)
+                #self._surf_conc_computed = True
+                
+                # Compute raw volumetric concentration
+                compute_volumetric_concentration(sc, self.DfsuWaterDepth, self.VolumetricConcentrationPOI)
+                
+                # get the computed value
+                vc_raw = sc['volumetric_concentration_poi']
+                
+                # Store the result in a rolling buffer
+                self._vc_rolling_buffer.append(vc_raw)
+
+                # Compute smoothed result
+                if len(self._vc_rolling_buffer) > 1:
+                    smoothed_vc = np.mean(self._vc_rolling_buffer, axis=0)
+                else:
+                    smoothed_vc = vc_raw  # fallback to raw on first step
+
+                # Store both raw and smoothed concentrations
+                sc['volumetric_concentration_poi_raw'] = vc_raw
+                sc['volumetric_concentration_poi'] = smoothed_vc
+                # print(f"Smooth Volumetric Concentration: {smoothed_vc}") #BH - remove
                 self._surf_conc_computed = True
 
     @property

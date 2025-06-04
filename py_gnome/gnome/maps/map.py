@@ -1171,7 +1171,7 @@ class MapFromBNA(RasterMap):
 
     def __init__(self,
                  filename,
-                 raster_size=12288 *  12288, # BH replaced with 144 MB - 4096 * 4096,
+                 raster_size=22528*22528, # BH now 484 MB, was 12288*12288/128 & 4096*4096/16MB
                  map_bounds=None,
                  spillable_area=None,
                  land_polys=None,

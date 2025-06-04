@@ -6,7 +6,7 @@
 #
 # These packages would all be in one of the following channels:
 
-python_version >= "3.8"
+python_version >= "3.12"
 
 # for SpatialRelease
 trimesh
@@ -63,5 +63,8 @@ backports-functools_lru_cache
 
 #to read dfsu file
 mikeio
+
+#for volumetric concentration
+geopy
 
 
